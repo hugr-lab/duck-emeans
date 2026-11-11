@@ -1,0 +1,176 @@
+# name: test/sql/emeans.test
+# description: emeans() clusters a list of vectors; types, defaults, NULLs, GROUP BY and errors
+# group: [emeans]
+
+require emeans
+
+# Two unit squares, at (0, 0) and (10, 10). Whatever the start, the closing pass leaves each centroid at
+# the mean of its four corners: (0.5, 0.5) and (10.5, 10.5). Which one is label 1 depends on the seed,
+# so the centroids are compared sorted and the labels by structure.
+statement ok
+CREATE TABLE squares AS
+SELECT [[0, 0], [0, 1], [1, 0], [1, 1], [10, 10], [10, 11], [11, 10], [11, 11]]::DOUBLE[][] AS x;
+
+statement ok
+CREATE TABLE fitted AS SELECT emeans(x, 2) AS r FROM squares;
+
+query I
+SELECT list_sort(r.centroids) FROM fitted
+----
+[[0.5, 0.5], [10.5, 10.5]]
+
+query III
+SELECT len(list_distinct(r.labels[1:4])), len(list_distinct(r.labels[5:8])), r.labels[1] <> r.labels[5]
+FROM fitted
+----
+1	1	true
+
+# labels are 1-based: centroids[labels[i]] is the centroid of point i.
+query I
+SELECT r.centroids[r.labels[1]] FROM fitted
+----
+[0.5, 0.5]
+
+# One objective per pass (5 by default), and the recipe of n = 8, k = 2, d = 2, T = 5.
+query III
+SELECT len(r.obj), r.batch_size = (emeans_recipe(8, 2, 2, 5.0)).batch_size,
+       r.alpha0 = (emeans_recipe(8, 2, 2, 5.0)).alpha0
+FROM fitted
+----
+5	true	true
+
+query I
+SELECT len((emeans(x, 2, 3.0)).obj) FROM squares
+----
+3
+
+# Integer lists, FLOAT lists and fixed-size FLOAT[2] arrays all reach the same clustering.
+query III
+SELECT list_sort((emeans(x::INTEGER[][], 2)).centroids), list_sort((emeans(x::FLOAT[][], 2)).centroids),
+       list_sort((emeans(x::FLOAT[2][], 2)).centroids)
+FROM squares
+----
+[[0.5, 0.5], [10.5, 10.5]]	[[0.5, 0.5], [10.5, 10.5]]	[[0.5, 0.5], [10.5, 10.5]]
+
+# The same seed gives the same result; NULL nepochs means 5 and NULL seed means 1234.
+query III
+SELECT emeans(x, 2, 5.0, 7) = emeans(x, 2, 5.0, 7), emeans(x, 2, NULL, NULL) = emeans(x, 2),
+       emeans(x, 2, 5.0, 1234) = emeans(x, 2)
+FROM squares
+----
+true	true	true
+
+# nepochs = 0.5 is one pass over round(0.5 * 8) = 4 rows: the other 4 have NULL labels.
+query II
+SELECT len(r.labels), len(list_filter(r.labels, lambda l: l IS NOT NULL)) FROM (SELECT emeans(x, 2, 0.5) AS r FROM squares)
+----
+8	4
+
+# One clustering per group, from a table of FLOAT[2] embeddings.
+statement ok
+CREATE TABLE points AS
+SELECT g, i, [(i // 4) * 10 + (i % 2) + g * 100, (i // 4) * 10 + ((i // 2) % 2)]::FLOAT[2] AS v
+FROM range(3) a(g), range(8) b(i);
+
+query II
+SELECT g, list_sort((emeans(list(v ORDER BY i), 2)).centroids) FROM points GROUP BY g ORDER BY g
+----
+0	[[0.5, 0.5], [10.5, 10.5]]
+1	[[100.5, 0.5], [110.5, 10.5]]
+2	[[200.5, 0.5], [210.5, 10.5]]
+
+# NULL x or k gives NULL, and the NULL rows survive materialisation with every field NULL.
+statement ok
+CREATE TABLE mixed AS
+SELECT emeans(x, k) AS r FROM (VALUES ([[1, 2], [3, 4]]::DOUBLE[][], 1), (NULL, 1), ([[1, 2]]::DOUBLE[][], NULL)) t(x, k);
+
+query IIII
+SELECT r IS NULL, r.centroids IS NULL, r.labels IS NULL, r.centroids FROM mixed ORDER BY 1, 4
+----
+false	false	false	[[2.0, 3.0]]
+true	true	true	NULL
+true	true	true	NULL
+
+# Errors name the vector at fault, 1-based.
+statement error
+SELECT emeans([[1, 2], [3]], 1)
+----
+vector 2 has 1 elements, expected 2
+
+statement error
+SELECT emeans([[1, 2], NULL], 1)
+----
+vector 2 is NULL
+
+statement error
+SELECT emeans([[1, 2], [3, NULL]], 1)
+----
+vector 2 has a NULL at element 2
+
+statement error
+SELECT emeans([[1, 2], ['nan'::DOUBLE, 1]], 1)
+----
+vector 2 contains NaN or infinity
+
+statement error
+SELECT emeans([]::DOUBLE[][], 1)
+----
+x has no vectors
+
+statement error
+SELECT emeans([[]]::DOUBLE[][], 1)
+----
+the first vector of x is NULL or empty
+
+statement error
+SELECT emeans([[1, 2]], 2)
+----
+k must not exceed n
+
+statement error
+SELECT emeans([[1, 2]], 0)
+----
+k must be at least 1
+
+statement error
+SELECT emeans([[1, 2]], 1, 5.0, -1)
+----
+seed must be in [0, 4294967295], got -1
+
+statement error
+SELECT emeans([[1, 2]], 1, 0.0)
+----
+nepochs must be a positive number
+
+# The work limit: 5 passes x 8 rows x k 2 x d 2 = 160.
+statement ok
+SET emeans_max_work = 159;
+
+statement error
+SELECT emeans(x, 2) FROM squares
+----
+rows x k x d over all passes is 160, the limit 159. A running call cannot be interrupted; raise the limit with SET emeans_max_work
+
+statement ok
+SET emeans_max_work = 160;
+
+query I
+SELECT len((emeans(x, 2)).labels) FROM squares
+----
+8
+
+statement ok
+SET emeans_max_work = 0;
+
+query I
+SELECT len((emeans(x, 2)).labels) FROM squares
+----
+8
+
+statement ok
+RESET emeans_max_work;
+
+query I
+SELECT current_setting('emeans_max_work')
+----
+100000000000.0

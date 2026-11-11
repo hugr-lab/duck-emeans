@@ -10,20 +10,37 @@ It is written in C11 on the stable DuckDB C extension API and built for DuckDB 2
 
 ## Status
 
-Phases 1 and 2 of [the plan](docs/PLAN.md): the build and test gates, the recipe, and the e-means loop in
-the C core (`emeans_fit` in `src/core/emeans.c`). The SQL functions that call the loop come in phase 3.
+Phases 1 to 3 of [the plan](docs/PLAN.md) are done: the C core and the SQL functions below. Still to come:
+validation against the FAISS reference, a faster assignment kernel, the cosine variant, and a browser demo.
 
-| Function | State |
+| Function | Returns |
 |---|---|
-| `emeans_recipe(n, k, d, nepochs [, batch_law])` | done: batch size, alpha0, law, passes and steps |
-| `emeans(vectors, k [, nepochs [, seed]])` | planned: centroids, labels, objective per pass |
-| `emeans_assign(vector, centroids)` | planned: nearest centroid and distance, row by row |
-| `emeans_spherical(...)` | planned: cosine variant |
+| `emeans(vectors, k [, nepochs [, seed]])` | `STRUCT(centroids FLOAT[][], labels INTEGER[], obj DOUBLE[], batch_size, alpha0, n_splits)` |
+| `emeans_assign(vector, centroids)` | `STRUCT(label INTEGER, sq_distance DOUBLE)`, the nearest centroid |
+| `emeans_recipe(n, k, d, nepochs [, batch_law])` | the batch size, step, law, passes and steps e-means would use |
+
+`vectors` is a list of equal-length vectors, as `FLOAT[]`, `DOUBLE[]`, integer lists or fixed-size arrays
+such as `FLOAT[384]`; build it with `list(embedding ORDER BY id)`. Labels are 1-based, so
+`centroids[labels[i]]` is row i's centroid, and they are the assignments of the last pass. `nepochs`
+defaults to 5 and `seed` to 1234; the same seed gives the same result.
 
 ```sql
 LOAD emeans;
-SELECT emeans_recipe(1000000, 1000, 128, 2.0);
--- {'batch_size': 32768, 'alpha0': 0.7339706421150827, 'batch_law': throughput, 'n_passes': 2, 'total_steps': 62}
+
+-- Cluster every document's chunks into 8 topics, then label each chunk with its topic
+CREATE TABLE topics AS
+SELECT doc_id, emeans(list(embedding ORDER BY chunk_id), 8, 2.0) AS r
+FROM chunks GROUP BY doc_id;
+
+SELECT c.doc_id, c.chunk_id, (emeans_assign(c.embedding, t.r.centroids)).label AS topic
+FROM chunks c JOIN topics t USING (doc_id);
+```
+
+A running scalar function cannot be interrupted, so one `emeans()` call does at most
+`emeans_max_work` units of work (rows × k × d summed over the passes; default 1e11, 0 = no limit):
+
+```sql
+SET emeans_max_work = 1e12;
 ```
 
 ## Building

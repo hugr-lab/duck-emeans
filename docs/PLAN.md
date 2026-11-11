@@ -56,8 +56,8 @@ argument once in bind and caches the norms, so the hot path is a plain n × k ×
 2. Core (done): rng, assign kernel, the loop; C tests, Lloyd equivalence (B = n, α0 = 1 reproduces two
    Lloyd iterations computed by hand on a 6-point set), revival on a set with two dead initial centroids,
    closing means, determinism, fault injection, 8 threads under TSan.
-3. SQL: `emeans`, `emeans_assign`, LIST and ARRAY inputs, NULL handling, errors, sqllogictests, a
-   threads test.
+3. SQL (done): `emeans`, `emeans_assign`, LIST and ARRAY inputs (arrays through the implicit cast),
+   NULL handling, errors, the `emeans_max_work` setting, sqllogictests, a threads test.
 4. Validation: final objective within 1% of `NumpyEmeans` (`pip install faiss-cpu`) on Gaussian
    mixtures (n = 100k, d = 16 and 128, k = 256) with the same recipe, `emeans_assign` agreeing with
    `faiss.knn`; benchmark; README and `docs/ALGORITHM.md`.
