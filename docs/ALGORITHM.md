@@ -24,9 +24,10 @@ total = Σ_passes ⌈rows / B⌉.
 Permutation seed of pass e: (seed · 1000003 + e) mod 2^32. Revival threshold τ = 0.1 for d > 2, 0
 (disabled) otherwise.
 
-## Loop (planned, `src/core/emeans.c`)
+## Loop (`src/core/emeans.c`)
 
-State: centroid c_j and mass N_j, initially N_j = 2^-16 and c_j a random row (or all rows when n = k).
+State: centroid c_j and mass N_j, initially N_j = 2^-16 and c_j the first k rows of a random
+permutation (or the given `init`).
 
 Per batch of B rows from the pass's permutation:
 
@@ -45,5 +46,21 @@ Per batch of B rows from the pass's permutation:
 Closing: c_j = pass_sums_j / pass_counts_j where pass_counts_j > 0. Labels are the last pass's
 assignments, so a label is not necessarily the nearest final centroid; `emeans_assign` gives that.
 
-Spherical: assign with ĉ_j = c_j / ‖c_j‖ (zero stays zero) and argmax of the dot product; objective
+## Where this differs from the reference
+
+- Random numbers come from PCG32, not numpy's MT19937, so permutations, initial centroids and donor
+  draws differ from `NumpyEmeans` with the same seed. Results agree in distribution, not in bits. The
+  initial centroids, the pass permutations and the donor draws use separate streams of one seed; pass e
+  reseeds from (seed · 1000003 + e) mod 2^32 as the reference does.
+- u for the Gumbel keys is drawn from the open interval (0, 1), so no key is infinite; the reference
+  draws from (0, 1] and clamps.
+- Distances are exact squared differences accumulated in double. The reference (FAISS) computes
+  ‖x‖² + ‖c‖² − 2 x·c in float32, which can differ in the last bits and, rarely, in a tie.
+- An input with NaN or infinity is rejected; the reference does not check.
+- `max_points_per_centroid` (training on a subsample) is not implemented; sample in SQL instead.
+- Spherical mode is not implemented yet (phase 5).
+
+## Spherical (planned)
+
+Assign with ĉ_j = c_j / ‖c_j‖ (zero stays zero) and argmax of the dot product; objective
 Σ(2 − 2·sim); the closing mean is normalised.

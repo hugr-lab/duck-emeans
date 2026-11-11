@@ -117,23 +117,23 @@ const char *emeans_batch_law_name(emeans_batch_law law) {
 	return LAW_NAMES[law];
 }
 
-static int fail(char *err, const char *msg) {
+int emeans_error(char *err, const char *msg) {
 	snprintf(err, EMEANS_ERR_LEN, "%s", msg);
 	return 1;
 }
 
 static int check_shape(int64_t n, int64_t k, int64_t d, char *err) {
 	if (n < 1) {
-		return fail(err, "n must be at least 1");
+		return emeans_error(err, "n must be at least 1");
 	}
 	if (k < 1) {
-		return fail(err, "k must be at least 1");
+		return emeans_error(err, "k must be at least 1");
 	}
 	if (k > n) {
-		return fail(err, "k must not exceed n");
+		return emeans_error(err, "k must not exceed n");
 	}
 	if (d < 1) {
-		return fail(err, "d must be at least 1");
+		return emeans_error(err, "d must be at least 1");
 	}
 	return 0;
 }
@@ -141,23 +141,23 @@ static int check_shape(int64_t n, int64_t k, int64_t d, char *err) {
 static int check_schedule(int64_t n, double nepochs, emeans_batch_law law, char *err) {
 	// The bound keeps floor(nepochs) and the pass count inside int64 (NaN and infinity fail it too).
 	if (!(nepochs > 0) || !(nepochs <= EMEANS_MAX_NEPOCHS)) {
-		return fail(err, "nepochs must be a positive number, at most 1e6");
+		return emeans_error(err, "nepochs must be a positive number, at most 1e6");
 	}
 	if (floor(nepochs) == 0 && fractional_rows(n, nepochs) == 0) {
-		return fail(err, "nepochs * n rounds to zero rows");
+		return emeans_error(err, "nepochs * n rounds to zero rows");
 	}
 	if (law < EMEANS_LAW_AUTO || law > EMEANS_LAW_QUALITY) {
-		return fail(err, "batch_law must be 'auto', 'throughput' or 'quality'");
+		return emeans_error(err, "batch_law must be 'auto', 'throughput' or 'quality'");
 	}
 	return 0;
 }
 
 static int check_overrides(int64_t batch_size, double alpha0, char *err) {
 	if (batch_size < 0) {
-		return fail(err, "batch_size must be at least 1 (0 = from the batch law)");
+		return emeans_error(err, "batch_size must be at least 1 (0 = from the batch law)");
 	}
 	if (alpha0 < 0 || alpha0 > 1 || !isfinite(alpha0)) {
-		return fail(err, "alpha0 must be in (0, 1] (0 = from the step law)");
+		return emeans_error(err, "alpha0 must be in (0, 1] (0 = from the step law)");
 	}
 	return 0;
 }

@@ -37,6 +37,9 @@ set(CMAKE_C_EXTENSIONS OFF)
 set(EXTENSION_SOURCES
         # Numerical core: no DuckDB dependency
         src/core/recipe.c
+        src/core/rng.c
+        src/core/assign.c
+        src/core/emeans.c
         # SQL surface: vector I/O and function registration
         src/functions/emeans_recipe.c
         # Entrypoint

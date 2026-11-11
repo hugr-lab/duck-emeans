@@ -35,8 +35,9 @@ Use `rtk` as a command prefix in this environment (see the user's global instruc
 
 ## Where things are
 
-- `src/core/recipe.c`: scaling laws, pass schedule, cosine step schedule. Coming: `rng.c`, `assign.c`
-  (exact nearest centroid, float32, blocked), `emeans.c` (the loop, revival, closing).
+- `src/core/recipe.c`: scaling laws, pass schedule, cosine step schedule. `rng.c`: PCG32 and the partial
+  shuffle. `assign.c`: exact nearest centroid. `emeans.c`: the loop, revival and closing (`emeans_fit`),
+  one allocation per call.
 - `src/functions/*.c`: one file per SQL function.
 - `docs/PLAN.md`: the phased plan; `docs/ALGORITHM.md`: the formulas.
 
@@ -49,8 +50,8 @@ Use `rtk` as a command prefix in this environment (see the user's global instruc
   through `emeans_malloc`/`emeans_calloc`/`emeans_realloc` so fault injection reaches the out-of-memory
   paths.
 - No mutable global or static state in src/: calls run concurrently on DuckDB's threads.
-- A C API scalar function cannot be interrupted: long loops must charge a budget (coming with the
-  clustering loop) so a setting keeps bounding run time.
+- A C API scalar function cannot be interrupted: `emeans_fit` refuses work above `max_work` (rows × k × d
+  over all passes) up front; the SQL layer will set it from a setting so run time stays bounded.
 - With no git commits, set `EXTENSION_VERSION` or the metadata footer is corrupt.
 - Expected values in tests must be derived from the model, not copied from output. Carry the arithmetic
   in a comment.

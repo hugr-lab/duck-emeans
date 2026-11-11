@@ -34,11 +34,12 @@ argument once in bind and caches the norms, so the hot path is a plain n × k ×
   (throughput) or 0.00439175 (quality; `auto` picks it for d ≤ 16), rounded to the nearest power of
   two and capped; step law α0 = 0.8244 · k^-0.4617 · B^0.9003 · n^-0.4498 · T^-0.1057 clamped to
   [1e-4, 1]; pass schedule; cosine schedule α = α0 · (0.1 + 0.9 · ½(1 + cos(π · step/total))).
-- `rng.c`: PCG32 or xoshiro128 and a Fisher–Yates permutation. Numpy's permutation cannot be matched
+- `rng.c` (done): PCG32 and a partial Fisher–Yates shuffle. Numpy's permutation cannot be matched
   bit for bit, so tests compare objectives and assignments, not centroid bits.
-- `assign.c`: exact nearest centroid in float32 as ‖x‖² + ‖c‖² − 2 x·c, blocked loops (64 rows × 64
-  centroids × d) so the compiler can vectorise. No BLAS.
-- `emeans.c`: state is the centroid c_j and mass N_j (initially 2^-16). Per batch: assign, accumulate
+- `assign.c` (done, plain loop): exact nearest centroid, squared differences in double. Phase 5 replaces
+  it with ‖x‖² + ‖c‖² − 2 x·c in blocked loops (64 rows × 64 centroids × d) so the compiler can
+  vectorise. No BLAS.
+- `emeans.c` (done): state is the centroid c_j and mass N_j (initially 2^-16). Per batch: assign, accumulate
   n_j and s_j; N_j ← (1 − α) N_j for all j; for n_j > 0, N_j += α n_j and
   c_j += (α n_j / N_j)(s_j / n_j − c_j). α = 1 is one Lloyd step. Every 5 steps: revival, with
   threshold τ ΣN_j / k (τ = 0.1, none for d ≤ 2), donors sampled with Gumbel keys
@@ -52,8 +53,9 @@ argument once in bind and caches the norms, so the hot path is a plain n × k ×
 ## Phases
 
 1. Scaffold (done): repository, build, CI, test gates, `emeans_recipe`.
-2. Core: rng, assign kernel, the loop; C tests, Lloyd equivalence (B = n, α0 = 1 reproduces Lloyd
-   iterations computed by hand on a 20-point 2-D set), revival on a set with two dead initial centroids.
+2. Core (done): rng, assign kernel, the loop; C tests, Lloyd equivalence (B = n, α0 = 1 reproduces two
+   Lloyd iterations computed by hand on a 6-point set), revival on a set with two dead initial centroids,
+   closing means, determinism, fault injection, 8 threads under TSan.
 3. SQL: `emeans`, `emeans_assign`, LIST and ARRAY inputs, NULL handling, errors, sqllogictests, a
    threads test.
 4. Validation: final objective within 1% of `NumpyEmeans` (`pip install faiss-cpu`) on Gaussian

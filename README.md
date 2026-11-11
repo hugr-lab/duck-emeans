@@ -10,8 +10,8 @@ It is written in C11 on the stable DuckDB C extension API and built for DuckDB 2
 
 ## Status
 
-Phase 1 of [the plan](docs/PLAN.md): the repository, the build and the test gates, with the recipe as the
-first function. The clustering functions are not there yet.
+Phases 1 and 2 of [the plan](docs/PLAN.md): the build and test gates, the recipe, and the e-means loop in
+the C core (`emeans_fit` in `src/core/emeans.c`). The SQL functions that call the loop come in phase 3.
 
 | Function | State |
 |---|---|
