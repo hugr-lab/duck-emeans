@@ -32,11 +32,17 @@ v2.0.0 and `make test_release` runs on the latest DuckDB from PyPI.
 
 ```sh
 make release test_release test_core test_threads
-make crap           # CRAP < 10 for every C function (needs uv for lizard, llvm-cov)
-uvx pytest tools/crap   # the CRAP tool's own pure functions
+make crap           # CRAP < 10 for every C function (needs lizard via uvx, llvm-cov)
+uvx pytest tools/crap   # the CRAP tooling's own tests
 ```
 
-Before a commit, run the first line. The CRAP gate runs in CI. To score the Python tooling itself with
+Before a commit, run the first line. The CRAP gate runs in CI.
+
+`make crap` builds the C tests and the extension instrumented, runs them, writes one LCOV report and
+scores it with `tools/crap/crap_cpp.py`: lizard's cyclomatic complexity per function and the share of
+the function's own lines that ran. That scorer is shared, byte for byte, with
+`hugr-lab/mssql-extension` and `hugr-lab/duck-changepoint`; `python3 tools/crap/crap_cpp.py --selftest`
+checks it without lizard or a report. To score the Python tooling itself with
 [crapper](https://github.com/unclebob/crapper), give it an interpreter it can install into:
 `uv venv tools/crap/.venv && uv pip install -p tools/crap/.venv/bin/python pytest coverage`.
 
