@@ -26,7 +26,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BUILD = os.path.join(ROOT, "build", "crap")
 # Absolute, like cmake's paths, so llvm-cov sees one source file across all the binaries.
-CORE = [os.path.join(ROOT, "src/core/recipe.c")]
+CORE = [os.path.join(ROOT, f) for f in ("src/core/recipe.c", "src/core/rng.c", "src/core/assign.c", "src/core/emeans.c")]
 COVERAGE_FLAGS = ["-fprofile-instr-generate", "-fcoverage-mapping", "-O0", "-g"]
 SCORER = os.path.join(ROOT, "tools", "crap", "crap_cpp.py")
 

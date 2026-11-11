@@ -41,6 +41,9 @@ double emeans_scheduled_alpha(double alpha0, int64_t step, int64_t total_steps);
 // Permutation seed of one pass: (seed * 1000003 + pass) mod 2^32.
 uint32_t emeans_epoch_seed(uint32_t seed, int64_t pass);
 
+// Writes msg to err (EMEANS_ERR_LEN bytes) and returns 1, for `return emeans_error(err, "...")`.
+int emeans_error(char *err, const char *msg);
+
 // "auto", "throughput" or "quality"; returns 0 on success.
 int emeans_parse_batch_law(const char *name, emeans_batch_law *law);
 const char *emeans_batch_law_name(emeans_batch_law law);

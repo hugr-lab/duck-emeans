@@ -1,11 +1,14 @@
 // Concurrency test of src/core, built with ThreadSanitizer by `make test_threads`.
 //
 // DuckDB calls a scalar function from many threads at once. Eight threads resolve recipes from one
-// shared, read-only parameter table and compare every result with a single-threaded reference. The
-// core must have no mutable global state for this to pass.
+// shared, read-only parameter table, and then cluster one shared, read-only matrix with two seeds, and
+// compare every result with a single-threaded reference. The core must have no mutable global state
+// for this to pass.
 
+#include "emeans.h"
 #include "recipe.h"
 
+#include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,6 +16,10 @@
 
 #define N_THREADS 8
 #define N_CASES 4096
+#define FIT_N 600
+#define FIT_D 8
+#define FIT_K 6
+#define FIT_RUNS 4 // per thread
 
 typedef struct {
 	int64_t n, k, d;
@@ -46,6 +53,78 @@ static void *worker(void *arg) {
 		}
 	}
 	return NULL;
+}
+
+typedef struct {
+	float centroids[FIT_K * FIT_D];
+	int32_t labels[FIT_N];
+	double obj[3];
+} fit_out;
+
+typedef struct {
+	const float *x;
+	const fit_out *reference; // one per seed
+	int offset;
+	int mismatches;
+} fit_args;
+
+static int fit(const float *x, uint32_t seed, fit_out *o) {
+	emeans_params p;
+	emeans_default_params(&p);
+	p.nepochs = 2.5;
+	p.seed = seed;
+	emeans_output out = {o->centroids, o->labels, o->obj, 0, {0}};
+	char err[EMEANS_ERR_LEN];
+	return emeans_fit(x, FIT_N, FIT_D, FIT_K, &p, &out, err);
+}
+
+static int same_fit(const fit_out *a, const fit_out *b) {
+	return memcmp(a, b, sizeof(fit_out)) == 0;
+}
+
+static void *fit_worker(void *arg) {
+	fit_args *w = (fit_args *)arg;
+	for (int run = 0; run < FIT_RUNS; run++) {
+		uint32_t seed = (uint32_t)((w->offset + run) % 2);
+		fit_out o;
+		if (fit(w->x, seed, &o) || !same_fit(&o, &w->reference[seed])) {
+			w->mismatches++;
+		}
+	}
+	return NULL;
+}
+
+static void fill_matrix(float *x) {
+	for (int i = 0; i < FIT_N * FIT_D; i++) {
+		x[i] = (float)sin(i * 0.731) + (float)((i / FIT_D) % FIT_K) * 4.0f;
+	}
+}
+
+static int run_fits(void) {
+	static float x[FIT_N * FIT_D];
+	fit_out reference[2];
+	fill_matrix(x);
+	if (fit(x, 0, &reference[0]) || fit(x, 1, &reference[1])) {
+		fprintf(stderr, "reference fit failed\n");
+		return 1;
+	}
+	pthread_t threads[N_THREADS];
+	fit_args args[N_THREADS];
+	for (int t = 0; t < N_THREADS; t++) {
+		args[t] = (fit_args) {x, reference, t, 0};
+		pthread_create(&threads[t], NULL, fit_worker, &args[t]);
+	}
+	int mismatches = 0;
+	for (int t = 0; t < N_THREADS; t++) {
+		pthread_join(threads[t], NULL);
+		mismatches += args[t].mismatches;
+	}
+	if (mismatches) {
+		fprintf(stderr, "%d fits differed between threads and the reference\n", mismatches);
+		return 1;
+	}
+	printf("test_threads: %d fits on %d threads match the reference\n", N_THREADS * FIT_RUNS, N_THREADS);
+	return 0;
 }
 
 // Deterministic parameter table: n from 2 to ~2^20, k up to n, d from 1 to 256, T from 0.5 to 8.
@@ -94,5 +173,5 @@ int main(void) {
 		return 1;
 	}
 	printf("test_threads: %d recipes on %d threads match the reference\n", N_CASES, N_THREADS);
-	return 0;
+	return run_fits();
 }

@@ -2,10 +2,15 @@
 // No DuckDB involved. Every expected value is derived from the formulas in recipe.h, with the
 // arithmetic in a comment; none is copied from the program's output.
 
+#include "assign.h"
+#include "emeans.h"
 #include "recipe.h"
+#include "rng.h"
 
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int failures = 0;
@@ -178,6 +183,289 @@ static void test_recipe_errors(void) {
 	CHECK(emeans_resolve_recipe(10, 2, 1, 1.0, EMEANS_LAW_AUTO, 0, NAN, &r, err) == 1, "alpha0 nan");
 }
 
+//===--------------------------------------------------------------------===//
+// rng, assign
+//===--------------------------------------------------------------------===//
+
+static int is_permutation(const int64_t *perm, int64_t n) {
+	int seen[64] = {0};
+	for (int64_t i = 0; i < n; i++) {
+		if (perm[i] < 0 || perm[i] >= n || seen[perm[i]]++) {
+			return 0;
+		}
+	}
+	return 1;
+}
+
+static void test_rng(void) {
+	emeans_rng a, b, c;
+	emeans_rng_seed(&a, 42, 1);
+	emeans_rng_seed(&b, 42, 1);
+	emeans_rng_seed(&c, 42, 2);
+	int same = 1, differs = 0;
+	for (int i = 0; i < 100; i++) {
+		uint32_t x = emeans_rng_next(&a);
+		same &= x == emeans_rng_next(&b);
+		differs |= x != emeans_rng_next(&c);
+	}
+	CHECK(same && differs, "same seed and stream repeat, another stream differs");
+	// bound 1 is always 0; bound 2^63 + 1 rejects about half the draws (2^64 mod bound = 2^63 - 1).
+	CHECK(emeans_rng_below(&a, 1) == 0, "below 1");
+	int hits[5] = {0};
+	for (int i = 0; i < 500; i++) {
+		uint64_t big = emeans_rng_below(&a, (1ULL << 63) + 1);
+		CHECK(big <= (1ULL << 63), "below 2^63 + 1");
+		hits[emeans_rng_below(&a, 5)]++;
+	}
+	CHECK(hits[0] && hits[1] && hits[2] && hits[3] && hits[4], "every value below 5 is drawn");
+	double lo = 1, hi = 0;
+	for (int i = 0; i < 1000; i++) {
+		double u = emeans_rng_open01(&a);
+		lo = fmin(lo, u);
+		hi = fmax(hi, u);
+	}
+	CHECK(lo > 0 && hi < 1 && lo < 0.01 && hi > 0.99, "open01 in (0, 1): %g .. %g", lo, hi);
+	int64_t perm[10];
+	emeans_shuffle_prefix(&a, perm, 10, 10);
+	CHECK(is_permutation(perm, 10), "full shuffle");
+	emeans_shuffle_prefix(&a, perm, 10, 3);
+	CHECK(is_permutation(perm, 10), "a prefix shuffle leaves a permutation");
+	emeans_shuffle_prefix(&a, perm, 10, 0);
+	CHECK(perm[0] == 0 && perm[9] == 9, "m = 0 is the identity");
+}
+
+static void test_assign(void) {
+	// Rows (0,0), (2,0), (1,0) against centroids (0,0), (2,0): row 2 is 1 from both, the tie goes to 0.
+	const float x[] = {0, 0, 2, 0, 1, 0};
+	const float c[] = {0, 0, 2, 0};
+	const int64_t rows[] = {2, 0, 1};
+	int32_t labels[3];
+	double dist[3];
+	emeans_assign(x, 2, rows, 3, c, 2, labels, dist);
+	CHECK(labels[0] == 0 && dist[0] == 1.0, "tie: label %d dist %g", labels[0], dist[0]);
+	CHECK(labels[1] == 0 && dist[1] == 0.0 && labels[2] == 1 && dist[2] == 0.0, "exact hits");
+	// (3, 4) to the origin: 9 + 16.
+	const float p[] = {3, 4};
+	CHECK(emeans_sq_dist(p, c, 2) == 25.0, "sq_dist");
+}
+
+//===--------------------------------------------------------------------===//
+// emeans_fit
+//===--------------------------------------------------------------------===//
+
+typedef struct {
+	float centroids[64 * 8];
+	int32_t labels[512];
+	double obj[16];
+	emeans_output out;
+	char err[EMEANS_ERR_LEN];
+} fit_result;
+
+static int fit(const float *x, int64_t n, int64_t d, int64_t k, const emeans_params *p, fit_result *r) {
+	r->out.centroids = r->centroids;
+	r->out.labels = r->labels;
+	r->out.obj = r->obj;
+	r->err[0] = '\0';
+	return emeans_fit(x, n, d, k, p, &r->out, r->err);
+}
+
+// Six points on the x axis, 0 1 2 3 10 11, from centroids 0 and 1.
+static const float LINE[] = {0, 0, 1, 0, 2, 0, 3, 0, 10, 0, 11, 0};
+static const float LINE_INIT[] = {0, 0, 1, 0};
+
+static void line_params(emeans_params *p, double nepochs) {
+	emeans_default_params(p);
+	p->init = LINE_INIT;
+	p->batch_size = 6;
+	p->alpha0 = 1.0;
+	p->nepochs = nepochs;
+}
+
+static void test_fit_one_lloyd_step(void) {
+	// One pass, one batch of all rows, alpha = alpha0 = 1 at step 0: one Lloyd step and then the closing
+	// mean, which is the same thing. Assignment: 0 -> c0; 1, 2, 3, 10, 11 -> c1, mean 27 / 5 = 5.4.
+	// Objective against the initial centroids: 0 + 0 + 1 + 4 + 81 + 100 = 186.
+	emeans_params p;
+	fit_result r;
+	line_params(&p, 1.0);
+	CHECK(fit(LINE, 6, 2, 2, &p, &r) == EMEANS_OK, "%s", r.err);
+	CHECK_NEAR(r.centroids[0], 0.0, 0);
+	CHECK_NEAR(r.centroids[2], 5.4, 1e-6);
+	CHECK(r.labels[0] == 0 && r.labels[1] == 1 && r.labels[5] == 1, "labels");
+	CHECK_NEAR(r.obj[0], 186.0, 1e-9);
+	CHECK(r.out.recipe.total_steps == 1 && r.out.n_splits == 0, "one step, no revival (d = 2)");
+}
+
+static void test_fit_two_lloyd_steps(void) {
+	// Two passes of one batch each. Step 0 has alpha = 1: c = (0, 5.4), as above. The closing pass assigns
+	// against those (0, 1, 2 -> c0, since 2 is 2 from 0 and 3.4 from 5.4; 3, 10, 11 -> c1) and its closing
+	// means replace whatever the alpha = 0.55 step did: c = (1, 8), two Lloyd iterations exactly.
+	// Objective of pass 1: 0 + 1 + 4 + 2.4^2 + 4.6^2 + 5.6^2 = 63.28.
+	emeans_params p;
+	fit_result r;
+	line_params(&p, 2.0);
+	CHECK(fit(LINE, 6, 2, 2, &p, &r) == EMEANS_OK, "%s", r.err);
+	CHECK_NEAR(r.centroids[0], 1.0, 1e-6);
+	CHECK_NEAR(r.centroids[1], 0.0, 0);
+	CHECK_NEAR(r.centroids[2], 8.0, 1e-6);
+	int expected[] = {0, 0, 0, 1, 1, 1};
+	for (int i = 0; i < 6; i++) {
+		CHECK(r.labels[i] == expected[i], "label %d is %d", i, r.labels[i]);
+	}
+	CHECK_NEAR(r.obj[0], 186.0, 1e-9);
+	CHECK_NEAR(r.obj[1], 63.28, 1e-4);
+}
+
+static void test_fit_fractional_pass(void) {
+	// nepochs = 0.5 on 6 rows: one pass of 3 rows; the other 3 keep label -1.
+	emeans_params p;
+	fit_result r;
+	line_params(&p, 0.5);
+	CHECK(fit(LINE, 6, 2, 2, &p, &r) == EMEANS_OK, "%s", r.err);
+	int labelled = 0;
+	for (int i = 0; i < 6; i++) {
+		labelled += r.labels[i] >= 0;
+	}
+	CHECK(labelled == 3 && r.out.recipe.n_passes == 1, "%d rows labelled", labelled);
+}
+
+// n points around 3 centres (0, 0, 0, 0), (20, 0, 0, 0) and (0, 20, 0, 0), with deterministic noise in
+// [-1, 1]. Row i belongs to centre i % 3.
+static void make_blobs(float *x, int64_t n, int64_t d) {
+	for (int64_t i = 0; i < n; i++) {
+		for (int64_t t = 0; t < d; t++) {
+			x[i * d + t] = (float)sin((double)(i * 7 + t * 13) * 1.37);
+		}
+		x[i * d] += (i % 3 == 1) ? 20.0f : 0.0f;
+		x[i * d + 1] += (i % 3 == 2) ? 20.0f : 0.0f;
+	}
+}
+
+static int pure_blobs(const int32_t *labels, int64_t n) {
+	for (int64_t i = 3; i < n; i++) {
+		if (labels[i] != labels[i % 3]) {
+			return 0;
+		}
+	}
+	return labels[0] != labels[1] && labels[1] != labels[2] && labels[0] != labels[2];
+}
+
+// After the closing pass every centroid with rows is their mean.
+static double closing_error(const float *x, int64_t n, int64_t d, int64_t k, const fit_result *r) {
+	double worst = 0;
+	for (int64_t j = 0; j < k; j++) {
+		for (int64_t t = 0; t < d; t++) {
+			double sum = 0;
+			int64_t count = 0;
+			for (int64_t i = 0; i < n; i++) {
+				sum += r->labels[i] == j ? x[i * d + t] : 0;
+				count += r->labels[i] == j;
+			}
+			worst = count ? fmax(worst, fabs(sum / (double)count - r->centroids[j * d + t])) : worst;
+		}
+	}
+	return worst;
+}
+
+static void test_fit_blobs(void) {
+	enum { N = 300, D = 4, K = 3 };
+	float x[N * D];
+	make_blobs(x, N, D);
+	emeans_params p;
+	emeans_default_params(&p);
+	p.nepochs = 3;
+	fit_result r, again;
+	CHECK(fit(x, N, D, K, &p, &r) == EMEANS_OK, "%s", r.err);
+	CHECK(pure_blobs(r.labels, N), "each blob is one cluster");
+	CHECK(r.obj[2] < r.obj[0], "the objective falls: %g -> %g", r.obj[0], r.obj[2]);
+	CHECK(closing_error(x, N, D, K, &r) < 1e-5, "closing means, error %g", closing_error(x, N, D, K, &r));
+	CHECK(fit(x, N, D, K, &p, &again) == EMEANS_OK, "%s", again.err);
+	CHECK(memcmp(r.centroids, again.centroids, sizeof(float) * K * D) == 0 &&
+	          memcmp(r.labels, again.labels, sizeof(int32_t) * N) == 0,
+	      "the same seed gives the same result");
+}
+
+// 10 points near (0, 0, 0) and 10 near (10, 0, 0), alternating, and four initial centroids, two of them
+// far from every point: those two are never assigned, their mass decays from 2^-16, and every 5 steps
+// revival hands them half of a live cluster. The first cluster has x = 0 exactly, so splitting it gives
+// two centroids with the same coordinate 0, and the child is moved one ULP.
+static void make_dead_start(float *x, float *init) {
+	for (int i = 0; i < 20; i++) {
+		x[i * 3] = i % 2 ? 10.0f + 0.1f * (float)(i % 5) : 0.0f;
+		x[i * 3 + 1] = 0.05f * (float)(i % 3);
+		x[i * 3 + 2] = 0.0f;
+	}
+	const float start[] = {0, 0, 0, 10, 0, 0, 1000, 1000, 1000, -1000, -1000, -1000};
+	memcpy(init, start, sizeof(start));
+}
+
+static void test_fit_revival(void) {
+	float x[60], init[12];
+	make_dead_start(x, init);
+	emeans_params p;
+	emeans_default_params(&p);
+	p.init = init;
+	p.nepochs = 1;
+	fit_result r;
+	CHECK(fit(x, 20, 3, 4, &p, &r) == EMEANS_OK, "%s", r.err);
+	CHECK(r.out.n_splits >= 2, "%lld splits", (long long)r.out.n_splits);
+	for (int t = 0; t < 12; t++) {
+		CHECK(fabsf(r.centroids[t]) < 20.0f, "centroid coordinate %d is %g", t, r.centroids[t]);
+	}
+	// tau = 0 turns revival off: the far centroids stay exactly where they started.
+	p.unused_threshold = 0;
+	CHECK(fit(x, 20, 3, 4, &p, &r) == EMEANS_OK, "%s", r.err);
+	CHECK(r.out.n_splits == 0 && r.centroids[6] == 1000.0f && r.centroids[11] == -1000.0f, "no revival");
+}
+
+static void test_fit_errors(void) {
+	emeans_params p;
+	fit_result r;
+	line_params(&p, 2.0);
+	CHECK(fit(LINE, 6, 2, 7, &p, &r) == EMEANS_INVALID && strstr(r.err, "exceed"), "k > n: %s", r.err);
+	r.out.centroids = r.centroids;
+	CHECK(emeans_fit(NULL, 6, 2, 2, &p, &r.out, r.err) == EMEANS_INVALID && strstr(r.err, "NULL"), "NULL x");
+	float bad[12];
+	memcpy(bad, LINE, sizeof(bad));
+	bad[7] = NAN;
+	CHECK(fit(bad, 6, 2, 2, &p, &r) == EMEANS_INVALID && strstr(r.err, "x contains"), "NaN: %s", r.err);
+	bad[7] = 0;
+	bad[0] = INFINITY;
+	CHECK(fit(bad, 6, 2, 2, &p, &r) == EMEANS_INVALID, "infinity");
+	const float bad_init[] = {0, 0, NAN, 0};
+	p.init = bad_init;
+	CHECK(fit(LINE, 6, 2, 2, &p, &r) == EMEANS_INVALID && strstr(r.err, "init contains"), "%s", r.err);
+	// k = 2^31 is rejected before x is read: n = k so the shape is valid, and LINE is far too short.
+	line_params(&p, 1.0);
+	CHECK(fit(LINE, 2147483648LL, 1, 2147483648LL, &p, &r) == EMEANS_INVALID && strstr(r.err, "2^31"), "%s", r.err);
+	// 2 passes of 6 rows x k 2 x d 2 = 48 units of work.
+	line_params(&p, 2.0);
+	p.max_work = 47;
+	CHECK(fit(LINE, 6, 2, 2, &p, &r) == EMEANS_BUDGET_EXCEEDED && strstr(r.err, "is 48"), "%s", r.err);
+	p.max_work = 48;
+	CHECK(fit(LINE, 6, 2, 2, &p, &r) == EMEANS_OK, "at the limit: %s", r.err);
+}
+
+static void test_fit_out_of_memory(void) {
+	enum { N = 30, D = 4 };
+	float x[N * D];
+	make_blobs(x, N, D);
+	emeans_params p;
+	emeans_default_params(&p);
+	fit_result r;
+	long fail_at = 1;
+	for (; fail_at < 10; fail_at++) {
+		emeans_fail_countdown = fail_at;
+		int rc = fit(x, N, D, 3, &p, &r);
+		if (rc == EMEANS_OK) {
+			break;
+		}
+		CHECK(rc == EMEANS_OOM && strstr(r.err, "out of memory"), "allocation %ld: %s", fail_at, r.err);
+	}
+	emeans_fail_countdown = 0;
+	CHECK(fail_at == 2, "one allocation per call, succeeded at %ld", fail_at);
+}
+
 int main(void) {
 	test_round_pow2();
 	test_passes();
@@ -187,6 +475,15 @@ int main(void) {
 	test_recipe_small();
 	test_recipe_caps_and_clamps();
 	test_recipe_errors();
+	test_rng();
+	test_assign();
+	test_fit_one_lloyd_step();
+	test_fit_two_lloyd_steps();
+	test_fit_fractional_pass();
+	test_fit_blobs();
+	test_fit_revival();
+	test_fit_errors();
+	test_fit_out_of_memory();
 	if (failures) {
 		fprintf(stderr, "%d checks failed\n", failures);
 		return 1;

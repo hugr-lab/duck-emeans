@@ -30,7 +30,7 @@ test: test_debug
 test_debug: test_extension_debug
 test_release: test_extension_release
 
-CORE_SOURCES := src/core/recipe.c
+CORE_SOURCES := src/core/recipe.c src/core/rng.c src/core/assign.c src/core/emeans.c
 
 # Standalone C tests of src/core under AddressSanitizer + UndefinedBehaviorSanitizer (no DuckDB needed).
 # EMEANS_FAULT_INJECTION lets the test fail every allocation in turn (src/include/emeans_alloc.h).
