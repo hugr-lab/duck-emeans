@@ -82,14 +82,13 @@ int64_t emeans_pass_rows(int64_t n, double nepochs, int64_t pass) {
 	return fractional_rows(n, nepochs);
 }
 
+// Closed form of the sum over the pass schedule, so a large nepochs costs nothing here: whole - 1 full
+// passes plus the closing one, and the rounded fraction if any; below one pass only the fraction.
 static int64_t total_steps(int64_t n, double nepochs, int64_t batch_size) {
-	int64_t steps = 0;
-	int64_t passes = emeans_n_passes(n, nepochs);
-	for (int64_t pass = 0; pass < passes; pass++) {
-		int64_t rows = emeans_pass_rows(n, nepochs, pass);
-		steps += (rows + batch_size - 1) / batch_size;
-	}
-	return steps;
+	int64_t whole = (int64_t)floor(nepochs);
+	int64_t full = (n + batch_size - 1) / batch_size;
+	int64_t partial = (fractional_rows(n, nepochs) + batch_size - 1) / batch_size;
+	return whole == 0 ? partial : whole * full + partial;
 }
 
 double emeans_scheduled_alpha(double alpha0, int64_t step, int64_t total_steps) {
@@ -140,8 +139,9 @@ static int check_shape(int64_t n, int64_t k, int64_t d, char *err) {
 }
 
 static int check_schedule(int64_t n, double nepochs, emeans_batch_law law, char *err) {
-	if (!(nepochs > 0) || !isfinite(nepochs)) {
-		return fail(err, "nepochs must be a positive number");
+	// The bound keeps floor(nepochs) and the pass count inside int64 (NaN and infinity fail it too).
+	if (!(nepochs > 0) || !(nepochs <= EMEANS_MAX_NEPOCHS)) {
+		return fail(err, "nepochs must be a positive number, at most 1e6");
 	}
 	if (floor(nepochs) == 0 && fractional_rows(n, nepochs) == 0) {
 		return fail(err, "nepochs * n rounds to zero rows");

@@ -14,6 +14,7 @@
 DUCKDB_EXTENSION_EXTERN
 
 #define DEFAULT_NEPOCHS 5.0
+#define N_FIELDS 5
 
 typedef struct {
 	int64_t *batch_size;
@@ -30,6 +31,16 @@ static bool row_is_valid(duckdb_vector vec, idx_t row) {
 static void set_null(duckdb_vector vec, idx_t row) {
 	duckdb_vector_ensure_validity_writable(vec);
 	duckdb_validity_set_row_invalid(duckdb_vector_get_validity(vec), row);
+}
+
+// A NULL struct row: the parent and, as DuckDB's own FlatVector::SetNull does, every child. Readers
+// that materialise the result copy each child by the child's own validity, so a child left valid
+// would hand them uninitialised bytes (a string_t, for batch_law).
+static void set_struct_null(duckdb_vector output, idx_t row) {
+	set_null(output, row);
+	for (idx_t i = 0; i < N_FIELDS; i++) {
+		set_null(duckdb_struct_vector_get_child(output, i), row);
+	}
 }
 
 static recipe_columns output_columns(duckdb_vector output) {
@@ -61,19 +72,19 @@ static int read_law(duckdb_data_chunk input, idx_t row, emeans_batch_law *law, c
 		return 0;
 	}
 	duckdb_string_t s = ((duckdb_string_t *)duckdb_vector_get_data(vec))[row];
-	char name[16];
+	const char *data = duckdb_string_t_data(&s);
 	uint32_t len = duckdb_string_t_length(s);
-	if (len >= sizeof(name)) {
-		len = sizeof(name) - 1;
+	char name[16]; // longer than every law name, so anything that does not fit is unknown
+	if (len < sizeof(name)) {
+		memcpy(name, data, len);
+		name[len] = '\0';
+		if (emeans_parse_batch_law(name, law) == 0) {
+			return 0;
+		}
 	}
-	memcpy(name, duckdb_string_t_data(&s), len);
-	name[len] = '\0';
-	if (emeans_parse_batch_law(name, law)) {
-		snprintf(err, EMEANS_ERR_LEN, "emeans_recipe: unknown batch_law '%s'; use 'auto', 'throughput' or 'quality'",
-		         name);
-		return 1;
-	}
-	return 0;
+	snprintf(err, EMEANS_ERR_LEN, "emeans_recipe: unknown batch_law '%.*s'; use 'auto', 'throughput' or 'quality'",
+	         (int)len, data);
+	return 1;
 }
 
 static double read_nepochs(duckdb_data_chunk input, idx_t row) {
@@ -119,7 +130,7 @@ static void RecipeFunction(duckdb_function_info info, duckdb_data_chunk input, d
 			return;
 		}
 		if (rc == 1) {
-			set_null(output, row);
+			set_struct_null(output, row);
 			continue;
 		}
 		write_recipe(&columns, row, &r);
@@ -127,13 +138,13 @@ static void RecipeFunction(duckdb_function_info info, duckdb_data_chunk input, d
 }
 
 static duckdb_logical_type recipe_type(void) {
-	duckdb_logical_type members[5] = {
+	duckdb_logical_type members[N_FIELDS] = {
 	    duckdb_create_logical_type(DUCKDB_TYPE_BIGINT), duckdb_create_logical_type(DUCKDB_TYPE_DOUBLE),
 	    duckdb_create_logical_type(DUCKDB_TYPE_VARCHAR), duckdb_create_logical_type(DUCKDB_TYPE_BIGINT),
 	    duckdb_create_logical_type(DUCKDB_TYPE_BIGINT)};
-	const char *names[5] = {"batch_size", "alpha0", "batch_law", "n_passes", "total_steps"};
-	duckdb_logical_type type = duckdb_create_struct_type(members, names, 5);
-	for (int i = 0; i < 5; i++) {
+	const char *names[N_FIELDS] = {"batch_size", "alpha0", "batch_law", "n_passes", "total_steps"};
+	duckdb_logical_type type = duckdb_create_struct_type(members, names, N_FIELDS);
+	for (int i = 0; i < N_FIELDS; i++) {
 		duckdb_destroy_logical_type(&members[i]);
 	}
 	return type;

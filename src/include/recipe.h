@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #define EMEANS_ERR_LEN 256
+#define EMEANS_MAX_NEPOCHS 1e6 // largest accepted nepochs; keeps the pass arithmetic inside int64
 
 typedef enum { EMEANS_LAW_AUTO = 0, EMEANS_LAW_THROUGHPUT = 1, EMEANS_LAW_QUALITY = 2 } emeans_batch_law;
 

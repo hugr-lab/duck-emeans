@@ -52,6 +52,24 @@ SELECT emeans_recipe(NULL, 10, 3, 1.0) IS NULL, emeans_recipe(100, NULL, 3, 1.0)
 ----
 true	true	true
 
+# A NULL row survives materialisation (which copies the struct's children by their own validity):
+# every field of it is NULL too, and the valid row is intact.
+statement ok
+CREATE TABLE mixed AS
+SELECT emeans_recipe(n, k, d, 2.0) AS r FROM (VALUES (NULL, 1, 1), (100, 10, 3), (NULL, NULL, NULL)) t(n, k, d);
+
+query IIII
+SELECT r IS NULL, (r).batch_law IS NULL, (r).batch_size IS NULL, (r).batch_law FROM mixed ORDER BY 1, 4
+----
+false	false	false	quality
+true	true	true	NULL
+true	true	true	NULL
+
+query I
+SELECT list(emeans_recipe(n, k, d, 2.0) IS NULL ORDER BY n NULLS FIRST) FROM (VALUES (NULL, 1, 1), (100, 10, 3)) t(n, k, d)
+----
+[true, false]
+
 # One row per table row, with INTEGER columns cast to BIGINT. At T = 5 the 1e6 row's raw B is
 # 28421.93 * 2.5^0.813344 = 59885, nearest power of two 65536.
 statement ok
@@ -78,3 +96,15 @@ statement error
 SELECT emeans_recipe(10, 2, 3, 1.0, 'fast')
 ----
 unknown batch_law 'fast'
+
+# A long name is quoted in full, not cut at the law-name buffer.
+statement error
+SELECT emeans_recipe(10, 2, 3, 1.0, 'throughput_please')
+----
+unknown batch_law 'throughput_please'
+
+# nepochs is bounded, so the pass arithmetic stays in int64 and the call stays short.
+statement error
+SELECT emeans_recipe(10, 2, 3, 1e12)
+----
+at most 1e6

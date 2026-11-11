@@ -120,6 +120,12 @@ static void test_recipe_small(void) {
 	CHECK(emeans_resolve_recipe(10, 2, 3, 2.5, EMEANS_LAW_AUTO, 0, 0, &r, err) == 0, "%s", err);
 	CHECK(r.batch_size == 1 && r.n_passes == 3 && r.total_steps == 25, "fractional");
 	CHECK_NEAR(r.alpha0, 0.1928813225, 1e-9);
+	// Below one pass: T = 0.5 on 10 rows is one pass of 5 rows, B = 1, so 5 steps.
+	CHECK(emeans_resolve_recipe(10, 2, 3, 0.5, EMEANS_LAW_AUTO, 0, 0, &r, err) == 0, "%s", err);
+	CHECK(r.n_passes == 1 && r.total_steps == 5, "half a pass: %lld steps", (long long)r.total_steps);
+	// At the bound, T = 1e6 on 10 rows with B = 1: 1e6 passes of 10 steps, in constant time.
+	CHECK(emeans_resolve_recipe(10, 2, 3, 1e6, EMEANS_LAW_AUTO, 1, 0, &r, err) == 0, "%s", err);
+	CHECK(r.n_passes == 1000000 && r.total_steps == 10000000, "1e6 passes");
 }
 
 static void test_recipe_caps_and_clamps(void) {
@@ -157,6 +163,9 @@ static void test_recipe_errors(void) {
 	CHECK(emeans_resolve_recipe(10, 2, 1, -1.0, EMEANS_LAW_AUTO, 0, 0, &r, err) == 1, "T < 0");
 	CHECK(emeans_resolve_recipe(10, 2, 1, NAN, EMEANS_LAW_AUTO, 0, 0, &r, err) == 1, "T nan");
 	CHECK(emeans_resolve_recipe(10, 2, 1, INFINITY, EMEANS_LAW_AUTO, 0, 0, &r, err) == 1, "T inf");
+	CHECK(emeans_resolve_recipe(10, 2, 1, 1e6 + 1, EMEANS_LAW_AUTO, 0, 0, &r, err) == 1 && strstr(err, "at most"),
+	      "T above the bound");
+	CHECK(emeans_resolve_recipe(10, 2, 1, 1e19, EMEANS_LAW_AUTO, 0, 0, &r, err) == 1, "T beyond int64");
 	// 0.01 * 10 = 0.1 rounds to zero rows.
 	CHECK(emeans_resolve_recipe(10, 2, 1, 0.01, EMEANS_LAW_AUTO, 0, 0, &r, err) == 1 && strstr(err, "zero rows"), "T tiny");
 	CHECK(emeans_resolve_recipe(10, 2, 1, 1.0, (emeans_batch_law)7, 0, 0, &r, err) == 1 && strstr(err, "batch_law"),
