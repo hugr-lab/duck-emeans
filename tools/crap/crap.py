@@ -12,7 +12,8 @@ Coverage is region coverage (the share of a function's code regions that ran), m
 three. Exits 2 when any function scores at or above --threshold (default 10).
 
 Needs clang, llvm-profdata and llvm-cov (xcrun finds them on macOS), uvx (for lizard), cmake, and
-configure/venv from `make configure`.
+configure/venv from `make configure`. The pure functions have tests in test_crap.py
+(`uvx pytest tools/crap`).
 """
 
 import argparse
@@ -29,8 +30,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 BUILD = os.path.join(ROOT, "build", "crap")
 CORE = ["src/core/recipe.c"]
 COVERAGE_FLAGS = ["-fprofile-instr-generate", "-fcoverage-mapping", "-O0", "-g"]
-# lizard reports the entry point under its macro name; the compiled function is <name>_init_c_api.
-ALIASES = {"DUCKDB_EXTENSION_ENTRYPOINT": "emeans_init_c_api"}
+# lizard reports the entry point under its macro name; the body it measured compiles to
+# <name>_init_c_api_internal (<name>_init_c_api is the wrapper the macro generates around it).
+ALIASES = {"DUCKDB_EXTENSION_ENTRYPOINT": "emeans_init_c_api_internal"}
+# Functions below this score are left out of the report unless --all is given.
+SHOW_FROM = 5.0
 
 
 def tool(name):
@@ -86,56 +90,104 @@ def sql_tests():
     return library
 
 
-def coverage(binaries):
-    """(file, function) -> region coverage in [0, 1], merged over all binaries."""
+def merged_profile():
+    """Merges every .profraw under BUILD into one .profdata; returns its path."""
     raw = [os.path.join(BUILD, f) for f in os.listdir(BUILD) if f.endswith(".profraw")]
     profdata = os.path.join(BUILD, "all.profdata")
     run([*tool("llvm-profdata"), "merge", "-sparse", *raw, "-o", profdata])
+    return profdata
+
+
+def exported_functions(profdata, binary):
+    """The llvm-cov function records of one binary."""
+    export = json.loads(run([*tool("llvm-cov"), "export", "-format=text", f"-instr-profile={profdata}", binary]))
+    return export["data"][0]["functions"]
+
+
+def source_key(fn):
+    """(file, function) of an llvm-cov record in src/, or None for other files."""
+    path = os.path.relpath(fn["filenames"][0], ROOT)
+    return (path, fn["name"].split(":")[-1]) if path.startswith("src/") else None
+
+
+def region_flags(fn):
+    """Executed or not, per code region (kind 0) in the function's own file (file id 0)."""
+    return [r[4] > 0 for r in fn["regions"] if r[7] == 0 and r[5] == 0]
+
+
+def merge_flags(old, flags):
+    """Region-wise OR of two runs of the same function; a region-count mismatch keeps the first run."""
+    if not old:
+        return flags
+    if len(old) != len(flags):
+        return old
+    return [a or b for a, b in zip(old, flags)]
+
+
+def add_functions(covered, functions):
+    """Merges the records of one binary into covered: (file, function) -> region flags."""
+    for fn in functions:
+        key = source_key(fn)
+        if key:
+            covered[key] = merge_flags(covered.get(key), region_flags(fn))
+
+
+def fraction(flags):
+    """Share of regions that ran; a function without regions counts as fully covered."""
+    return sum(flags) / len(flags) if flags else 1.0
+
+
+def coverage(binaries):
+    """(file, function) -> region coverage in [0, 1], merged over all binaries."""
+    profdata = merged_profile()
     covered = {}
     for binary in binaries:
-        export = json.loads(run([*tool("llvm-cov"), "export", "-format=text", f"-instr-profile={profdata}", binary]))
-        for fn in export["data"][0]["functions"]:
-            path = os.path.relpath(fn["filenames"][0], ROOT)
-            if not path.startswith("src/"):
-                continue
-            # code regions (kind 0) in the function's own file (file id 0): executed or not
-            flags = [r[4] > 0 for r in fn["regions"] if r[7] == 0 and r[5] == 0]
-            key = (path, fn["name"].split(":")[-1])
-            old = covered.get(key)
-            covered[key] = [a or b for a, b in zip(old, flags)] if old and len(old) == len(flags) else old or flags
-    return {key: (sum(f) / len(f) if f else 1.0) for key, f in covered.items()}
+        add_functions(covered, exported_functions(profdata, binary))
+    return {key: fraction(flags) for key, flags in covered.items()}
 
 
 def crap(cc, cov):
     return cc * cc * (1 - cov) ** 3 + cc
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--threshold", type=float, default=10.0)
-    parser.add_argument("--all", action="store_true", help="list every function, not only those at/above 5")
-    args = parser.parse_args()
-
-    shutil.rmtree(BUILD, ignore_errors=True)
-    os.makedirs(BUILD)
-    cc = complexity()
-    cov = coverage(core_tests() + [sql_tests()])
-
+def score_rows(cc, cov):
+    """(CRAP, function, file, CC, coverage or None) per function, worst first; unknown coverage scores as 0."""
     rows = []
     for (path, name), c in cc.items():
         k = cov.get((path, name))
-        rows.append((crap(c, k if k is not None else 0.0), name, path, c, k))
-    rows.sort(key=lambda r: (-r[0], r[1]))
+        rows.append((crap(c, 0.0 if k is None else k), name, path, c, k))
+    return sorted(rows, key=lambda r: (-r[0], r[1]))
 
-    print(f"{len(rows)} functions in src/, worst first (CRAP = CC^2 (1 - cov)^3 + CC, region coverage)\n")
-    print(f"{'function':30s} {'file':36s} {'CC':>3s} {'cov%':>6s} {'CRAP':>6s}")
-    for score, name, path, c, k in rows:
-        if args.all or score >= 5:
-            shown = "N/A" if k is None else f"{100 * k:5.1f}"
-            print(f"{name:30s} {path:36s} {c:3d} {shown:>6s} {score:6.1f}")
-    worst = rows[0][0]
-    failing = [r for r in rows if r[0] >= args.threshold]
-    print(f"\nworst CRAP {worst:.1f}; {len(failing)} function(s) at or above {args.threshold:g}")
+
+def format_row(score, name, path, cc, cov):
+    shown = "N/A" if cov is None else f"{100 * cov:5.1f}"
+    return f"{name:30s} {path:36s} {cc:3d} {shown:>6s} {score:6.1f}"
+
+
+def report(rows, show_all, threshold):
+    """The report lines and the number of functions at or above the threshold."""
+    lines = [f"{len(rows)} functions in src/, worst first (CRAP = CC^2 (1 - cov)^3 + CC, region coverage)\n",
+             f"{'function':30s} {'file':36s} {'CC':>3s} {'cov%':>6s} {'CRAP':>6s}"]
+    lines += [format_row(*row) for row in rows if show_all or row[0] >= SHOW_FROM]
+    failing = sum(1 for row in rows if row[0] >= threshold)
+    lines.append(f"\nworst CRAP {rows[0][0]:.1f}; {failing} function(s) at or above {threshold:g}")
+    return lines, failing
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--threshold", type=float, default=10.0)
+    parser.add_argument("--all", action="store_true", help=f"list every function, not only those at/above {SHOW_FROM:g}")
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    shutil.rmtree(BUILD, ignore_errors=True)
+    os.makedirs(BUILD)
+    rows = score_rows(complexity(), coverage(core_tests() + [sql_tests()]))
+    lines, failing = report(rows, args.all, args.threshold)
+    print("\n".join(lines))
     return 2 if failing else 0
 
 

@@ -8,3 +8,5 @@ venv.venv
 __pycache__/
 workspace/
 .metrics/
+.venv/
+target/

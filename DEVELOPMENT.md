@@ -33,9 +33,12 @@ v2.0.0 and `make test_release` runs on the latest DuckDB from PyPI.
 ```sh
 make release test_release test_core test_threads
 make crap           # CRAP < 10 for every C function (needs uv for lizard, llvm-cov)
+uvx pytest tools/crap   # the CRAP tool's own pure functions
 ```
 
-Before a commit, run the first line. The CRAP gate runs in CI.
+Before a commit, run the first line. The CRAP gate runs in CI. To score the Python tooling itself with
+[crapper](https://github.com/unclebob/crapper), give it an interpreter it can install into:
+`uv venv tools/crap/.venv && uv pip install -p tools/crap/.venv/bin/python pytest coverage`.
 
 ## Code conventions
 
