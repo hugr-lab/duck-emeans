@@ -1,0 +1,25 @@
+extension:
+  name: emeans
+  description: e-means clustering, mini-batch k-means with EMA updates and fitted scaling laws (Bessa et al. 2026)
+  version: 0.0.1
+  language: C
+  build: cmake
+  license: MIT
+  requires_toolchains: "python3"
+  maintainers:
+    - oluies
+
+repo:
+  github: hugr-lab/duck-emeans
+  ref: main
+
+docs:
+  hello_world: |
+    LOAD emeans;
+
+    -- The batch size and initial step e-means would use for a million 128-d vectors into 1000 clusters
+    SELECT emeans_recipe(1000000, 1000, 128, 2.0);
+  extended_description: |
+    Work in progress: this version has the recipe (batch size, step and schedule from the scaling
+    laws). The clustering functions emeans() and emeans_assign() follow; see docs/PLAN.md.
+    Documentation: https://github.com/hugr-lab/duck-emeans

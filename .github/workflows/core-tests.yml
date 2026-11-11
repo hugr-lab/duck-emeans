@@ -1,0 +1,41 @@
+#
+# Numerical core under ASan/UBSan and ThreadSanitizer, and the CRAP gate over every C function.
+#
+name: Core tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  core:
+    name: test_core (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20   # ASan can hang at startup on some macOS releases; fail instead of waiting 6 h
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive   # the Makefile includes extension-ci-tools makefiles
+      - run: make test_core
+      - run: make test_threads
+
+  crap:
+    name: CRAP < 10 for every C function
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+      - run: make configure
+      - run: make crap

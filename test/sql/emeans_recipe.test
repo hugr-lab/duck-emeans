@@ -1,0 +1,80 @@
+# name: test/sql/emeans_recipe.test
+# description: emeans_recipe resolves B, alpha0 and the schedule from the fitted scaling laws
+# group: [emeans]
+
+require emeans
+
+# n = 1e6, k = 1000, d = 128, T = 2: 'auto' picks the throughput law (d > 16).
+#   raw B = 0.035134 * 1000^0.134749 * 1e6^0.876473 * 2^0.813344 = 28421.93, nearest power of two 32768
+#   alpha0 = 0.8244 * 1000^-0.4617 * 32768^0.9003 * 1e6^-0.4498 * 2^-0.1057 = 0.733971
+#   two passes of ceil(1e6 / 32768) = 31 steps
+query IIIII
+SELECT r.batch_size, round(r.alpha0, 6), r.batch_law, r.n_passes, r.total_steps
+FROM (SELECT emeans_recipe(1000000, 1000, 128, 2.0) AS r)
+----
+32768	0.733971	throughput	2	62
+
+# d = 16 picks the quality law: raw B = 3552.74 -> 4096; alpha0 = 0.112883; 2 * ceil(1e6 / 4096) = 490 steps.
+query IIIII
+SELECT r.batch_size, round(r.alpha0, 6), r.batch_law, r.n_passes, r.total_steps
+FROM (SELECT emeans_recipe(1000000, 1000, 16, 2.0) AS r)
+----
+4096	0.112883	quality	2	490
+
+# The fifth argument forces a law.
+query II
+SELECT r.batch_size, r.batch_law FROM (SELECT emeans_recipe(1000000, 1000, 16, 2.0, 'throughput') AS r)
+----
+32768	throughput
+
+# Fractional passes: T = 2.5 on 10 rows is [10, 5, 10]; raw B = 0.076 -> 1, so 25 steps.
+#   alpha0 = 0.8244 * 2^-0.4617 * 10^-0.4498 * 2.5^-0.1057 = 0.192881
+query IIII
+SELECT r.batch_size, round(r.alpha0, 6), r.n_passes, r.total_steps FROM (SELECT emeans_recipe(10, 2, 3, 2.5) AS r)
+----
+1	0.192881	3	25
+
+# NULL nepochs means 5 passes; NULL batch_law means 'auto'.
+query I
+SELECT emeans_recipe(100, 10, 3, NULL) = emeans_recipe(100, 10, 3, 5.0, NULL)
+----
+true
+
+query I
+SELECT (emeans_recipe(100, 10, 3, NULL)).n_passes
+----
+5
+
+# NULL n, k or d gives NULL.
+query III
+SELECT emeans_recipe(NULL, 10, 3, 1.0) IS NULL, emeans_recipe(100, NULL, 3, 1.0) IS NULL,
+       emeans_recipe(100, 10, NULL, 1.0) IS NULL
+----
+true	true	true
+
+# One row per table row, with INTEGER columns cast to BIGINT. At T = 5 the 1e6 row's raw B is
+# 28421.93 * 2.5^0.813344 = 59885, nearest power of two 65536.
+statement ok
+CREATE TABLE shapes AS SELECT * FROM (VALUES (100, 10, 3), (1000, 1, 2), (1000000, 1000, 128)) t(n, k, d);
+
+query III
+SELECT n, (emeans_recipe(n, k, d, 5.0)).batch_size, (emeans_recipe(n, k, d, 5.0)).batch_law FROM shapes ORDER BY n
+----
+100	1	quality
+1000	8	quality
+1000000	65536	throughput
+
+statement error
+SELECT emeans_recipe(10, 11, 3, 1.0)
+----
+k must not exceed n
+
+statement error
+SELECT emeans_recipe(10, 2, 3, 0.0)
+----
+nepochs must be a positive number
+
+statement error
+SELECT emeans_recipe(10, 2, 3, 1.0, 'fast')
+----
+unknown batch_law 'fast'
