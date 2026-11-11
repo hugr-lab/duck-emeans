@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""CRAP scores for this repository's C, from lizard's complexity and an LCOV report.
+"""CRAP scores for this repository's C or C++, from lizard's complexity and an LCOV report.
 
-Shared with hugr-lab/mssql-extension (tools/crap/crap_cpp.py, PR #550) and hugr-lab/duck-changepoint;
-keep the copies identical. `make crap` builds the instrumented tests, writes the LCOV and calls this.
+One file, kept identical in hugr-lab/mssql-extension, hugr-lab/duck-changepoint and hugr-lab/duck-emeans;
+change it in all three. test_crap_cpp.py beside it is the same everywhere too (`uvx pytest tools/crap`).
 
 CRAP = CC² × (1 − coverage)³ + CC, the metric `crapper` applies to the languages it
 reads. It does not read C++ -- no tool does, for CRAP: crap4j is Java-only -- so this
@@ -223,8 +223,8 @@ def over_threshold(rows, threshold):
 
 def report(rows, threshold, limit):
     known = any(r["crap"] is not None for r in rows)
-    print("CRAP Report (C)")
-    print("===============")
+    print("CRAP Report (C/C++)")
+    print("===================")
     print(f"{len(rows)} function(s)" + ("" if known else
           "; coverage N/A, so the CRAP column is what it WOULD be at 0% coverage (CC² + CC)"))
     print()
