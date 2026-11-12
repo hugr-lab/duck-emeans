@@ -9,15 +9,43 @@
 
 DUCKDB_EXTENSION_EXTERN
 
+emeans_buffer emeans_managed_buffer(emeans_mem *mem) {
+	return (emeans_buffer) {NULL, 0, 1, mem, NULL};
+}
+
 void emeans_buffer_free(emeans_buffer *b) {
-	free(b->data);
+	if (b->managed) {
+		emeans_block_free(b->block);
+		b->block = NULL;
+	} else {
+		free(b->data);
+	}
 	b->data = NULL;
 	b->cap = 0;
+}
+
+static int reserve_block(emeans_buffer *b, size_t count, char *err) {
+	emeans_block *grown = emeans_block_alloc(b->mem, count * sizeof(float), err);
+	if (!grown) {
+		return 1;
+	}
+	float *data = emeans_block_data(grown);
+	if (b->cap) {
+		memcpy(data, b->data, b->cap * sizeof(float));
+	}
+	emeans_block_free(b->block);
+	b->block = grown;
+	b->data = data;
+	b->cap = count;
+	return 0;
 }
 
 int emeans_buffer_reserve(emeans_buffer *b, size_t count, char *err) {
 	if (count <= b->cap) {
 		return 0;
+	}
+	if (b->managed) {
+		return reserve_block(b, count, err);
 	}
 	float *grown = realloc(b->data, count * sizeof(float));
 	if (!grown) {

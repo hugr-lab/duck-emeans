@@ -150,15 +150,16 @@ static duckdb_logical_type recipe_type(void) {
 	return type;
 }
 
-bool emeans_register_recipe(duckdb_connection connection) {
+bool emeans_register_recipe(duckdb_connection connection, emeans_mem *mem) {
+	(void)mem;
 	duckdb_logical_type params[5] = {
 	    duckdb_create_logical_type(DUCKDB_TYPE_BIGINT), duckdb_create_logical_type(DUCKDB_TYPE_BIGINT),
 	    duckdb_create_logical_type(DUCKDB_TYPE_BIGINT), duckdb_create_logical_type(DUCKDB_TYPE_DOUBLE),
 	    duckdb_create_logical_type(DUCKDB_TYPE_VARCHAR)};
 	duckdb_logical_type ret = recipe_type();
 	duckdb_scalar_function_set set = duckdb_create_scalar_function_set("emeans_recipe");
-	bool ok = emeans_add_overload(set, "emeans_recipe", params, 4, ret, RecipeFunction, NULL) &&
-	          emeans_add_overload(set, "emeans_recipe", params, 5, ret, RecipeFunction, NULL) &&
+	bool ok = emeans_add_overload(set, "emeans_recipe", params, 4, ret, RecipeFunction, NULL, NULL) &&
+	          emeans_add_overload(set, "emeans_recipe", params, 5, ret, RecipeFunction, NULL, NULL) &&
 	          duckdb_register_scalar_function_set(connection, set) == DuckDBSuccess;
 	duckdb_destroy_scalar_function_set(&set);
 	duckdb_destroy_logical_type(&ret);

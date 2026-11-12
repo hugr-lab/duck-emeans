@@ -1,0 +1,48 @@
+# name: test/sql/emeans_memory.test
+# description: emeans_agg's points are buffer-manager memory: counted against memory_limit, and written to the temp directory when they do not fit
+# group: [emeans]
+
+# The C++ build only: the C API build (Makefile.capi) allocates with malloc, which memory_limit does not see.
+
+require emeans
+
+# 100 groups of 30,000 2-D points: 3M points, 48 MB as stored (two doubles each), above the 30 MB limit
+# below. The coordinates are fixed so that both runs see the same points.
+statement ok
+CREATE TABLE pts AS
+SELECT i // 30000 AS g, [(i * 7919 % 10007)::DOUBLE, (i * 104729 % 10009)::DOUBLE] AS p
+FROM range(3000000) r(i);
+
+# Unlimited, for reference.
+statement ok
+CREATE TABLE free AS SELECT g, emeans_agg(p, 4, 1) AS c FROM pts GROUP BY g;
+
+# Two threads: each pins its table segments and up to two blocks of a growing state, and on a machine with
+# many cores the pinned memory alone would fill the limit.
+statement ok
+SET threads = 2;
+
+statement ok
+SET memory_limit = '30MB';
+
+# The states outgrow the limit and go to the temp directory (the test runner's); the result is the same.
+query II
+SELECT count(*), sum(t.c.n) FROM (SELECT g, emeans_agg(p, 4, 1) AS c FROM pts GROUP BY g) t JOIN free USING (g)
+WHERE t.c = free.c;
+----
+100	3000000
+
+# One group of all 3M points: the state's capacity doubles to 2^22 points, a single 64 MB block, above a
+# 60 MB limit however much else is spilled. The error says so instead of the process taking the memory
+# anyway. (60 MB rather than 30, and one thread, so that DuckDB's own allocations always fit and the
+# failing one is ours: with two, each thread's state reaches 32 MB, and which allocation fails first is a race.)
+statement ok
+SET memory_limit = '60MB';
+
+statement ok
+SET threads = 1;
+
+statement error
+SELECT emeans_agg(p, 4, 1) FROM pts;
+----
+could not allocate block

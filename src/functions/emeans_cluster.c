@@ -47,7 +47,8 @@ static bool register_option(duckdb_connection connection, const char *name, duck
 	return ok;
 }
 
-bool emeans_register_settings(duckdb_connection connection) {
+bool emeans_register_settings(duckdb_connection connection, emeans_mem *mem) {
+	(void)mem;
 	return register_option(connection, MAX_WORK_SETTING, DUCKDB_TYPE_DOUBLE, duckdb_create_double(MAX_WORK_DEFAULT),
 	                       "Maximum work per emeans() call, in rows x k x d summed over all passes; 0 = no limit. "
 	                       "Bounds run time, since a running call cannot be interrupted.") &&
@@ -113,6 +114,7 @@ typedef struct {
 	emeans_settings settings;
 	int spherical;
 	const char *name;
+	emeans_mem *mem; // the input matrix and the fit's workspace come from here
 } cluster_mode;
 
 static int read_params(duckdb_data_chunk input, idx_t row, const cluster_mode *mode, emeans_params *p, char *err) {
@@ -120,6 +122,7 @@ static int read_params(duckdb_data_chunk input, idx_t row, const cluster_mode *m
 	p->max_work = mode->settings.max_work;
 	p->threads = mode->settings.threads;
 	p->spherical = mode->spherical;
+	p->allocator = emeans_mem_allocator(mode->mem);
 	if (arg_present(input, 2, row)) {
 		p->nepochs = ((const double *)arg_data(input, 2))[row];
 	}
@@ -212,9 +215,10 @@ static int cluster_row(duckdb_data_chunk input, idx_t row, const cluster_mode *m
 
 static void cluster_chunk(duckdb_function_info info, duckdb_data_chunk input, duckdb_vector output, int spherical) {
 	idx_t count = duckdb_data_chunk_get_size(input);
+	emeans_mem *mem = duckdb_scalar_function_get_extra_info(info);
 	cluster_mode mode = {*(const emeans_settings *)duckdb_scalar_function_get_bind_data(info), spherical,
-	                     spherical ? "emeans_spherical" : "emeans"};
-	emeans_buffer x = {NULL, 0};
+	                     spherical ? "emeans_spherical" : "emeans", mem};
+	emeans_buffer x = emeans_managed_buffer(mem);
 	char err[EMEANS_ERR_LEN];
 	for (idx_t row = 0; row < count; row++) {
 		int rc = cluster_row(input, row, &mode, output, &x, err);
@@ -258,13 +262,13 @@ static duckdb_logical_type result_type(void) {
 
 // name(x, k), name(x, k, nepochs) and name(x, k, nepochs, seed) for one element type.
 static bool add_overloads(duckdb_scalar_function_set set, const char *name, duckdb_scalar_function_t fn,
-                          duckdb_type element, duckdb_logical_type ret) {
+                          duckdb_type element, duckdb_logical_type ret, emeans_mem *mem) {
 	duckdb_logical_type params[4] = {emeans_matrix_type(element), duckdb_create_logical_type(DUCKDB_TYPE_BIGINT),
 	                                 duckdb_create_logical_type(DUCKDB_TYPE_DOUBLE),
 	                                 duckdb_create_logical_type(DUCKDB_TYPE_BIGINT)};
 	bool ok = true;
 	for (idx_t n_params = 2; n_params <= 4; n_params++) {
-		ok = ok && emeans_add_overload(set, name, params, n_params, ret, fn, emeans_bind_settings);
+		ok = ok && emeans_add_overload(set, name, params, n_params, ret, fn, emeans_bind_settings, mem);
 	}
 	for (int i = 0; i < 4; i++) {
 		duckdb_destroy_logical_type(&params[i]);
@@ -272,18 +276,19 @@ static bool add_overloads(duckdb_scalar_function_set set, const char *name, duck
 	return ok;
 }
 
-static bool register_set(duckdb_connection connection, const char *name, duckdb_scalar_function_t fn) {
+static bool register_set(duckdb_connection connection, const char *name, duckdb_scalar_function_t fn,
+                         emeans_mem *mem) {
 	duckdb_logical_type ret = result_type();
 	duckdb_scalar_function_set set = duckdb_create_scalar_function_set(name);
-	bool ok = add_overloads(set, name, fn, DUCKDB_TYPE_FLOAT, ret) &&
-	          add_overloads(set, name, fn, DUCKDB_TYPE_DOUBLE, ret) &&
+	bool ok = add_overloads(set, name, fn, DUCKDB_TYPE_FLOAT, ret, mem) &&
+	          add_overloads(set, name, fn, DUCKDB_TYPE_DOUBLE, ret, mem) &&
 	          duckdb_register_scalar_function_set(connection, set) == DuckDBSuccess;
 	duckdb_destroy_scalar_function_set(&set);
 	duckdb_destroy_logical_type(&ret);
 	return ok;
 }
 
-bool emeans_register_cluster(duckdb_connection connection) {
-	return register_set(connection, "emeans", ClusterFunction) &&
-	       register_set(connection, "emeans_spherical", SphericalFunction);
+bool emeans_register_cluster(duckdb_connection connection, emeans_mem *mem) {
+	return register_set(connection, "emeans", ClusterFunction, mem) &&
+	       register_set(connection, "emeans_spherical", SphericalFunction, mem);
 }

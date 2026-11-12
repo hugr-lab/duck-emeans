@@ -784,6 +784,53 @@ static void test_kmeans_plus_plus(void) {
 	CHECK(fit(x, 10, 2, 2, &p, &r) == EMEANS_OK, "%s", r.err);
 }
 
+// A caller's allocator: emeans_fit takes its workspace from it, returns it, and passes its error on. The
+// allocator hands out garbage-filled memory, so the result matching calloc's shows the fit zeroes it.
+typedef struct {
+	int allocs, releases;
+	int fail;
+} counting_allocator;
+
+static void *counting_alloc(void *ctx, size_t bytes, void **handle, char *err) {
+	counting_allocator *a = ctx;
+	if (a->fail) {
+		snprintf(err, EMEANS_ERR_LEN, "the pool is empty");
+		return NULL;
+	}
+	a->allocs++;
+	*handle = malloc(bytes);
+	if (*handle) {
+		memset(*handle, 0xA5, bytes);
+	}
+	return *handle;
+}
+
+static void counting_release(void *ctx, void *handle) {
+	((counting_allocator *)ctx)->releases++;
+	free(handle);
+}
+
+static void test_fit_allocator(void) {
+	enum { N = 300, D = 4, K = 3 };
+	float x[N * D];
+	make_blobs(x, N, D);
+	emeans_params p;
+	emeans_default_params(&p);
+	fit_result plain, pooled;
+	CHECK(fit(x, N, D, K, &p, &plain) == EMEANS_OK, "%s", plain.err);
+	counting_allocator a = {0, 0, 0};
+	p.allocator = (emeans_allocator) {counting_alloc, counting_release, &a};
+	CHECK(fit(x, N, D, K, &p, &pooled) == EMEANS_OK, "%s", pooled.err);
+	CHECK(a.allocs == 1 && a.releases == 1, "%d allocations, %d releases", a.allocs, a.releases);
+	CHECK(memcmp(plain.centroids, pooled.centroids, sizeof(float) * K * D) == 0 &&
+	          memcmp(plain.labels, pooled.labels, sizeof(int32_t) * N) == 0,
+	      "the allocator does not change the result");
+	a.fail = 1;
+	CHECK(fit(x, N, D, K, &p, &pooled) == EMEANS_OOM && strcmp(pooled.err, "the pool is empty") == 0, "%s",
+	      pooled.err);
+	CHECK(a.releases == 1, "nothing released after a failed allocation");
+}
+
 int main(void) {
 	test_round_pow2();
 	test_passes();
@@ -802,6 +849,7 @@ int main(void) {
 	test_fit_revival();
 	test_fit_errors();
 	test_fit_out_of_memory();
+	test_fit_allocator();
 	test_kernel_matches_exact();
 	test_parallel_for();
 	test_fit_threads_same_result();

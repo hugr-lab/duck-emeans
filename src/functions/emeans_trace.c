@@ -337,8 +337,9 @@ static int trace_row(duckdb_data_chunk input, idx_t row, const emeans_settings *
 	trace_args a;
 	trace_log t = {0};
 	emeans_recipe recipe;
-	int rc = read_args(input, row, settings, &a, err) || read_data(input, row, b, &t, err) ||
-	         run_trace(&a, &t, &recipe, err) || write_result(output, row, &recipe, &t, err);
+	int rc = read_args(input, row, settings, &a, err) || read_data(input, row, b, &t, err);
+	a.p.allocator = emeans_mem_allocator(b->train.mem);
+	rc = rc || run_trace(&a, &t, &recipe, err) || write_result(output, row, &recipe, &t, err);
 	log_free(&t);
 	return rc ? ROW_ERROR : ROW_OK;
 }
@@ -346,7 +347,8 @@ static int trace_row(duckdb_data_chunk input, idx_t row, const emeans_settings *
 static void TraceFunction(duckdb_function_info info, duckdb_data_chunk input, duckdb_vector output) {
 	idx_t count = duckdb_data_chunk_get_size(input);
 	const emeans_settings *settings = duckdb_scalar_function_get_bind_data(info);
-	trace_buffers b = {{NULL, 0}, {NULL, 0}};
+	emeans_mem *mem = duckdb_scalar_function_get_extra_info(info);
+	trace_buffers b = {emeans_managed_buffer(mem), emeans_managed_buffer(mem)};
 	char err[EMEANS_ERR_LEN];
 	for (idx_t row = 0; row < count; row++) {
 		int rc = trace_row(input, row, settings, output, &b, err);
@@ -390,24 +392,25 @@ static duckdb_logical_type result_type(void) {
 	return struct_of(members, names, 3);
 }
 
-static bool add_overload(duckdb_scalar_function_set set, duckdb_type element, duckdb_logical_type ret) {
+static bool add_overload(duckdb_scalar_function_set set, duckdb_type element, duckdb_logical_type ret,
+                         emeans_mem *mem) {
 	duckdb_logical_type params[N_ARGS] = {
 	    emeans_matrix_type(element),                     emeans_matrix_type(element),
 	    duckdb_create_logical_type(DUCKDB_TYPE_BIGINT),  duckdb_create_logical_type(DUCKDB_TYPE_DOUBLE),
 	    duckdb_create_logical_type(DUCKDB_TYPE_BIGINT),  duckdb_create_logical_type(DUCKDB_TYPE_VARCHAR),
 	    duckdb_create_logical_type(DUCKDB_TYPE_DOUBLE),  duckdb_create_logical_type(DUCKDB_TYPE_BIGINT),
 	    duckdb_create_logical_type(DUCKDB_TYPE_BOOLEAN)};
-	bool ok = emeans_add_overload(set, "emeans_trace", params, N_ARGS, ret, TraceFunction, emeans_bind_settings);
+	bool ok = emeans_add_overload(set, "emeans_trace", params, N_ARGS, ret, TraceFunction, emeans_bind_settings, mem);
 	for (int i = 0; i < N_ARGS; i++) {
 		duckdb_destroy_logical_type(&params[i]);
 	}
 	return ok;
 }
 
-bool emeans_register_trace(duckdb_connection connection) {
+bool emeans_register_trace(duckdb_connection connection, emeans_mem *mem) {
 	duckdb_logical_type ret = result_type();
 	duckdb_scalar_function_set set = duckdb_create_scalar_function_set("emeans_trace");
-	bool ok = add_overload(set, DUCKDB_TYPE_FLOAT, ret) && add_overload(set, DUCKDB_TYPE_DOUBLE, ret) &&
+	bool ok = add_overload(set, DUCKDB_TYPE_FLOAT, ret, mem) && add_overload(set, DUCKDB_TYPE_DOUBLE, ret, mem) &&
 	          duckdb_register_scalar_function_set(connection, set) == DuckDBSuccess;
 	duckdb_destroy_scalar_function_set(&set);
 	duckdb_destroy_logical_type(&ret);
