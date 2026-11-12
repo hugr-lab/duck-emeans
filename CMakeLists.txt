@@ -33,6 +33,7 @@ set(EXTENSION_SOURCES
         src/emeans_extension.c
         # C++: entry point, buffer-manager memory, the query, the window function
         src/cpp/emeans_agg.cpp
+        src/cpp/emeans_cluster.cpp
         src/cpp/emeans_extension.cpp
         src/cpp/emeans_mem.cpp
         src/cpp/emeans_query.cpp

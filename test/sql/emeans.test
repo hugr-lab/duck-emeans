@@ -174,3 +174,39 @@ query I
 SELECT current_setting('emeans_max_work')
 ----
 0.0
+
+# A list of fixed-size arrays gives centroids of the same size, FLOAT[d][]; lists give FLOAT[][]. The
+# values are the same either way.
+query III
+SELECT typeof((emeans(list(v::FLOAT[2]), 2, 5, 1)).centroids), typeof((emeans(list(v::DOUBLE[2]), 2, 5, 1)).centroids),
+       typeof((emeans(list(v), 2, 5, 1)).centroids)
+FROM (VALUES ([0, 0]), ([0, 1]), ([10, 10]), ([10, 11])) t(v)
+----
+FLOAT[2][]	FLOAT[2][]	FLOAT[][]
+
+query I
+SELECT (emeans(list(v::FLOAT[2]), 2, 5, 1)).centroids::FLOAT[][] = (emeans(list(v::FLOAT[]), 2, 5, 1)).centroids
+FROM (VALUES ([0, 0]), ([0, 1]), ([10, 10]), ([10, 11])) t(v)
+----
+true
+
+query I
+SELECT typeof((emeans_spherical(list(v::FLOAT[2]), 1)).centroids) FROM (VALUES ([0.6, 0.8]), ([0.8, 0.6])) t(v)
+----
+FLOAT[2][]
+
+# Array centroids go straight back into emeans_assign with array vectors.
+query II
+SELECT v, (emeans_assign(v::FLOAT[2], r.centroids)).label
+FROM (VALUES ([0, 0]), ([10, 11])) t(v),
+     (SELECT emeans(list(w::FLOAT[2]), 2, 5, 1) AS r FROM (VALUES ([0, 0]), ([0, 1]), ([10, 10]), ([10, 11])) u(w))
+ORDER BY v
+----
+[0, 0]	1
+[10, 11]	2
+
+# x must be a list of vectors; the bind says so before anything runs.
+statement error
+SELECT emeans(['a', 'b'], 1)
+----
+emeans: x must be a list of vectors, lists or arrays of numbers, not VARCHAR[]

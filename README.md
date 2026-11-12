@@ -39,8 +39,9 @@ such as `FLOAT[384]`; build it with `list(embedding ORDER BY id)`. Labels are 1-
 `centroids[labels[i]]` is row i's centroid, and they are the assignments of the last pass. `nepochs`
 defaults to 5 and `seed` to 1234; the same seed gives the same result. The spherical functions assign by
 the largest inner product with the centroid directions, for embeddings compared by cosine similarity;
-like the reference they do not normalise the vectors, so pass unit vectors. Centroids come back as
-`FLOAT[][]`; cast them to `FLOAT[384][]` if you need the array type.
+like the reference they do not normalise the vectors, so pass unit vectors. Centroids come back with the
+vectors' own shape: `FLOAT[384][]` for a list of `FLOAT[384]` (or any fixed-size numeric array), else
+`FLOAT[][]`.
 
 ```sql
 LOAD emeans;

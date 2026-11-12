@@ -25,7 +25,6 @@ bool emeans_add_overload(duckdb_scalar_function_set set, const char *name, duckd
 static bool (*const REGISTRATIONS[])(duckdb_connection, emeans_mem *) = {
     emeans_register_settings,
     emeans_register_recipe,
-    emeans_register_cluster,
     emeans_register_assign,
     emeans_register_trace,
 };

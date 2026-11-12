@@ -15,5 +15,7 @@ public:
 void RegisterClusterId(ExtensionLoader &loader);
 // emeans_agg, the aggregate (src/cpp/emeans_agg.cpp).
 void RegisterAgg(ExtensionLoader &loader);
+// emeans and emeans_spherical (src/cpp/emeans_cluster.cpp).
+void RegisterCluster(ExtensionLoader &loader);
 
 } // namespace duckdb
