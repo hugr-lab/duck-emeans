@@ -43,7 +43,8 @@ Use `rtk` as a command prefix in this environment (see the user's global instruc
   shuffle. `assign.c`: the blocked kernel (`emeans_kernel_*`, used everywhere) and the exact loop it is tested
   against. `emeans.c`: the loop, revival and closing (`emeans_fit`, Euclidean and spherical), one
   allocation per call; the kernel's transposed centroids are refreshed whenever a centroid moves.
-  `parallel.c`: the fork-join used to split a large batch. On macOS the kernel uses Accelerate's
+  `parallel.c`: the fork-join used to split a large batch when the caller gives no `params.parallel`;
+  the SQL functions give DuckDB's scheduler (`emeans_query_attach`, `src/cpp/emeans_query.cpp`). On macOS the kernel uses Accelerate's
   `cblas_sgemm` (`EMEANS_USE_ACCELERATE`, set by CMake and the Makefile); `use_blas = 0` forces the
   portable loop, so the tests cover both.
 - `src/core/geo.c`: WKB points, geographic CRSs, longitude/latitude to unit vectors, great-circle

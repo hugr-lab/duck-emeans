@@ -121,8 +121,8 @@ over the passes:
 SET emeans_max_work = 1e12;   -- default 0: no cap
 ```
 
-A call splits a large batch across up to `emeans_threads` threads (default 0, meaning DuckDB's `threads`
-setting). Small calls, such as one per group in a `GROUP BY`, stay on one thread. The result does not
+A call splits a large batch into up to `emeans_threads` parts (default 0, meaning DuckDB's `threads`
+setting), run as tasks on DuckDB's own scheduler. Small calls, such as one per group in a `GROUP BY`, stay on one thread. The result does not
 depend on the thread count.
 
 The large buffers come from DuckDB's buffer manager: the float copy of the input, the fit's workspace,

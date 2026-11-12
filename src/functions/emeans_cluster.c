@@ -128,8 +128,7 @@ static int read_params(duckdb_data_chunk input, idx_t row, const cluster_mode *m
 	p->threads = mode->settings.threads;
 	p->spherical = mode->spherical;
 	p->allocator = emeans_mem_allocator(mode->mem);
-	p->interrupted = emeans_query_interrupted;
-	p->interrupt_ctx = mode->settings.query;
+	emeans_query_attach(p, mode->settings.query);
 	if (arg_present(input, 2, row)) {
 		p->nepochs = ((const double *)arg_data(input, 2))[row];
 	}

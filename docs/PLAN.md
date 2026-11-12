@@ -139,7 +139,11 @@ Stages, each with every SQL test passing:
       takes `emeans_max_work`, `emeans_threads` and the query, so `emeans_agg` is limited, threaded and
       interruptible like `emeans()`. The parameter stays ANY: a GEOMETRY parameter would drop the CRS in
       the implicit cast, and the bind is what now rejects the types ANY lets through.
-   4. DuckDB's task scheduler in place of the pthreads shim (`src/core/parallel.c` keeps a hook).
+   4. DuckDB's task scheduler (done): `emeans_params.parallel` runs a batch's parts; the SQL functions
+      make them tasks of a `TaskExecutor` that the calling thread works on too, so a fit inside a
+      pipeline task never waits on a busy worker. The core keeps its pthreads fork-join for callers
+      without a scheduler (the C tests). 200,000 × 64, k = 256: 0.22 s on one part, 0.07 s on eight,
+      the same result.
    5. `FLOAT[d][]` centroids when the input is a fixed-size array, the type known at bind.
 
 Later, if wanted: an "IVF-Flat in SQL" example where `emeans_assign` gives the partition key (see

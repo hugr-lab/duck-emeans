@@ -88,6 +88,8 @@ void emeans_default_params(emeans_params *p) {
 	p->allocator = (emeans_allocator) {NULL, NULL, NULL};
 	p->interrupted = NULL;
 	p->interrupt_ctx = NULL;
+	p->parallel = NULL;
+	p->parallel_ctx = NULL;
 }
 
 //===--------------------------------------------------------------------===//
@@ -273,7 +275,10 @@ static int batch_parts(const run_state *s, int64_t count) {
 static void assign_batch(run_state *s, const int64_t *rows, int64_t count) {
 	batch_task t = {s, rows, count};
 	int parts = batch_parts(s, count);
-	if (parts > 1) {
+	const emeans_params *p = s->params;
+	if (parts > 1 && p->parallel) {
+		p->parallel(p->parallel_ctx, assign_part, &t, parts);
+	} else if (parts > 1) {
 		emeans_parallel_for(assign_part, &t, parts);
 	} else {
 		assign_part(&t, 0, 1);
