@@ -21,6 +21,10 @@ int emeans_buffer_reserve(emeans_buffer *b, size_t count, char *err);
 void emeans_buffer_free(emeans_buffer *b);
 
 bool emeans_row_is_valid(duckdb_vector vec, idx_t row);
+
+// Whether a vector is a LIST of a numeric type the readers take: FLOAT, DOUBLE, the signed and unsigned
+// integers, HUGEINT and DECIMAL.
+bool emeans_is_numeric_list(duckdb_vector vec);
 void emeans_set_row_null(duckdb_vector vec, idx_t row);
 
 // A NULL struct row: the parent and every child, so materialisation (which copies children by their own
@@ -43,6 +47,8 @@ int emeans_list_append(duckdb_vector out, idx_t row, idx_t count, idx_t *start, 
 int emeans_write_matrix(duckdb_vector out, idx_t row, const float *m, int64_t rows, int64_t cols, char *err);
 int emeans_write_labels(duckdb_vector out, idx_t row, const int32_t *labels, int64_t n, char *err);
 int emeans_write_doubles(duckdb_vector out, idx_t row, const double *v, int64_t n, char *err);
+// A rows x cols matrix of doubles into a LIST(LIST(DOUBLE)) vector.
+int emeans_write_matrix_f64(duckdb_vector out, idx_t row, const double *m, int64_t rows, int64_t cols, char *err);
 
 duckdb_logical_type emeans_list_type(duckdb_type element);
 duckdb_logical_type emeans_matrix_type(duckdb_type element); // LIST(LIST(element))

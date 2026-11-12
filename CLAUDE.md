@@ -44,6 +44,11 @@ Use `rtk` as a command prefix in this environment (see the user's global instruc
   `parallel.c`: the fork-join used to split a large batch. On macOS the kernel uses Accelerate's
   `cblas_sgemm` (`EMEANS_USE_ACCELERATE`, set by CMake and the Makefile); `use_blas = 0` forces the
   portable loop, so the tests cover both.
+- `src/core/geo.c`: WKB points, geographic CRSs, longitude/latitude to unit vectors, great-circle
+  distance, the row sort. `src/functions/emeans_agg.c` (aggregate) and `emeans_geo.c`
+  (`emeans_assign_point`) take the point as ANY: a GEOMETRY parameter would cast `GEOMETRY('OGC:CRS84')`
+  to plain GEOMETRY and lose the CRS. Core DuckDB knows `OGC:CRS84` without the spatial extension, so the
+  tests use it.
 - `src/functions/*.c`: one file per SQL function (`emeans_cluster.c` is `emeans()`); `vec_io.c` reads
   lists of vectors into float matrices and writes nested lists. Labels are 1-based in SQL, 0-based in the core.
 - `docs/PLAN.md`: the phased plan; `docs/ALGORITHM.md`: the formulas.

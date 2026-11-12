@@ -1,0 +1,174 @@
+# name: test/sql/emeans_agg.test
+# description: emeans_agg() clusters points per group or window partition; emeans_assign_point() labels them
+# group: [emeans]
+
+require emeans
+
+# Two groups, each two unit squares of POINT geometries: the corners of (0, 0) to (1, 1) and of (10, 10) to
+# (11, 11), shifted by 100 in y for group 1. Each centroid ends at its square's mean.
+statement ok
+CREATE TABLE pts AS
+SELECT grp, i, ('POINT(' || ((i // 4) * 10 + i % 2) || ' ' || (grp * 100 + (i // 4) * 10 + (i // 2) % 2) || ')')::GEOMETRY AS g
+FROM range(2) a(grp), range(8) b(i);
+
+query II
+SELECT grp, list_sort((emeans_agg(g, 2)).centroids) FROM pts GROUP BY grp ORDER BY grp
+----
+0	[[0.5, 0.5], [10.5, 10.5]]
+1	[[0.5, 100.5], [10.5, 110.5]]
+
+query IIII
+SELECT (r).n, (r).geographic, len((r).obj), (r).batch_size = (emeans_recipe(8, 2, 2, 5.0)).batch_size
+FROM (SELECT emeans_agg(g, 2) AS r FROM pts WHERE grp = 0)
+----
+8	false	5	true
+
+# As a window function: every row gets its partition's centroids, and emeans_assign_point labels it, as
+# ST_ClusterKMeans does in PostGIS (1-based here, so centroids[label] is the row's centroid).
+query III
+SELECT grp, list(DISTINCT label ORDER BY label), count(DISTINCT (label, i // 4))
+FROM (SELECT grp, i, (emeans_assign_point(g, (emeans_agg(g, 2) OVER (PARTITION BY grp)).centroids)).label AS label FROM pts)
+GROUP BY grp ORDER BY grp
+----
+0	[1, 2]	2
+1	[1, 2]	2
+
+# The order rows arrive in does not matter: the points are sorted before clustering.
+query I
+SELECT (SELECT emeans_agg(g, 2, 3.0, 7) FROM (SELECT g FROM pts WHERE grp = 0 ORDER BY i)) =
+       (SELECT emeans_agg(g, 2, 3.0, 7) FROM (SELECT g FROM pts WHERE grp = 0 ORDER BY i DESC))
+----
+true
+
+# Projected coordinates keep their precision: two pairs of points 1 m apart, 10 km apart, around the
+# SWEREF99 TM northing 6,580,000 (float32 alone would round to 0.5 m there).
+query I
+SELECT list_sort((emeans_agg(g, 2)).centroids)
+FROM (SELECT ('POINT(' || (674000 + (i // 4) * 10000 + i % 2) || ' ' || (6580000 + (i // 2) % 2) || ')')::GEOMETRY AS g
+      FROM range(8) t(i))
+----
+[[674000.5, 6580000.5], [684000.5, 6580000.5]]
+
+# A geographic CRS clusters on the sphere. Across the antimeridian, 179.9 E, 179.9 W (180.1 E) and
+# 179.8 E at latitudes 0, 0 and 0.1 average to 179.933 E, 0.033 N; a planar mean would put them at
+# 59.9 E. The result says geographic.
+query III
+SELECT round((r).centroids[1][1], 3), round((r).centroids[1][2], 3), (r).geographic
+FROM (SELECT emeans_agg(g, 1) AS r
+      FROM (VALUES ('POINT(179.9 0)'::GEOMETRY('OGC:CRS84')), ('POINT(-179.9 0)'::GEOMETRY('OGC:CRS84')),
+                   ('POINT(179.8 0.1)'::GEOMETRY('OGC:CRS84'))) t(g))
+----
+179.933	0.033	true
+
+# Two points at 89.9 N on opposite meridians: their mean on the sphere is the pole.
+query I
+SELECT round((emeans_agg(g, 1)).centroids[1][2], 6)
+FROM (VALUES ('POINT(0 89.9)'::GEOMETRY('OGC:CRS84')), ('POINT(180 89.9)'::GEOMETRY('OGC:CRS84'))) t(g)
+----
+90.0
+
+# emeans_assign_point: planar distance in the CRS's units, (1, 1) to (0, 0) is sqrt 2; geographic distance
+# in metres along the great circle, 179.95 W to 179.9 E is 0.15 degrees, R 0.15 pi / 180 = 16,679.26 m
+# with R = 6,371,008.8 m.
+query III
+SELECT (emeans_assign_point('POINT(1 1)'::GEOMETRY, [[0, 0], [10, 10]])).label,
+       round((emeans_assign_point('POINT(1 1)'::GEOMETRY, [[0, 0], [10, 10]])).distance, 6),
+       round((emeans_assign_point('POINT(-179.95 0)'::GEOMETRY('OGC:CRS84'), [[179.9, 0], [0, 0]])).distance, 2)
+----
+1	1.414214	16679.26
+
+# A point 5 m north of a centroid at 59 N: 5 / R radians of latitude, 4.4964e-5 degrees, measured back
+# to within a millimetre (float32 unit vectors would be off by up to ~0.2 m).
+query I
+SELECT abs((emeans_assign_point(('POINT(18 ' || (59 + degrees(5 / 6371008.8)) || ')')::GEOMETRY('OGC:CRS84'),
+                                [[18.0, 59.0]])).distance - 5) < 0.001
+----
+true
+
+# Lists of numbers work too, integer or floating.
+query I
+SELECT list_sort((emeans_agg(v, 2)).centroids) FROM (VALUES ([0, 0]), ([0, 1]), ([10, 10]), ([10, 11])) t(v)
+----
+[[0.0, 0.5], [10.0, 10.5]]
+
+# Every integer width, signed or not, HUGEINT and DECIMAL read the same.
+query IIII
+SELECT list_sort((emeans_agg(v::TINYINT[], 2)).centroids), list_sort((emeans_agg(v::SMALLINT[], 2)).centroids),
+       list_sort((emeans_agg(v::BIGINT[], 2)).centroids), list_sort((emeans_agg(v::DOUBLE[], 2)).centroids)
+FROM (VALUES ([0, 0]), ([0, 1]), ([10, 10]), ([10, 11])) t(v)
+----
+[[0.0, 0.5], [10.0, 10.5]]	[[0.0, 0.5], [10.0, 10.5]]	[[0.0, 0.5], [10.0, 10.5]]	[[0.0, 0.5], [10.0, 10.5]]
+
+query IIIII
+SELECT list_sort((emeans_agg(v::UTINYINT[], 2)).centroids), list_sort((emeans_agg(v::USMALLINT[], 2)).centroids),
+       list_sort((emeans_agg(v::UINTEGER[], 2)).centroids), list_sort((emeans_agg(v::UBIGINT[], 2)).centroids),
+       list_sort((emeans_agg(v::HUGEINT[], 2)).centroids)
+FROM (VALUES ([0, 0]), ([0, 1]), ([10, 10]), ([10, 11])) t(v)
+----
+[[0.0, 0.5], [10.0, 10.5]]	[[0.0, 0.5], [10.0, 10.5]]	[[0.0, 0.5], [10.0, 10.5]]	[[0.0, 0.5], [10.0, 10.5]]	[[0.0, 0.5], [10.0, 10.5]]
+
+# A literal such as [0.5, 1.5] is DECIMAL(2,1)[]; DECIMAL(18,3) is stored as BIGINT, DECIMAL(30,2) as HUGEINT.
+# Fixed-size arrays bind to the FLOAT[] overload.
+query IIII
+SELECT (emeans_agg(v, 1)).centroids, (emeans_agg(v::DECIMAL(18,3)[], 1)).centroids,
+       (emeans_agg(v::DECIMAL(30,2)[], 1)).centroids, (emeans_agg(v::FLOAT[2], 1)).centroids
+FROM (VALUES ([0.5, 1.5]), ([1.5, 2.5])) t(v)
+----
+[[1.0, 2.0]]	[[1.0, 2.0]]	[[1.0, 2.0]]	[[1.0, 2.0]]
+
+# NULL points and POINT EMPTY are skipped; a group of none gives NULL, and NULL rows survive.
+query II
+SELECT (emeans_agg(g, 1)).n, list_sort((emeans_agg(g, 1)).centroids)
+FROM (VALUES ('POINT(1 2)'::GEOMETRY), (NULL), ('POINT EMPTY'::GEOMETRY), ('POINT(3 4)'::GEOMETRY)) t(g)
+----
+2	[[2.0, 3.0]]
+
+query I
+SELECT emeans_agg(g, 1) IS NULL FROM pts WHERE false
+----
+true
+
+query I
+SELECT emeans_assign_point('POINT EMPTY'::GEOMETRY, [[0, 0]]) IS NULL
+----
+true
+
+statement error
+SELECT emeans_agg('LINESTRING(0 0, 1 1)'::GEOMETRY, 1)
+----
+emeans_agg: takes POINT geometries; use ST_Centroid for others
+
+statement error
+SELECT emeans_agg(g, k) FROM (VALUES ('POINT(0 0)'::GEOMETRY, 1), ('POINT(1 1)'::GEOMETRY, 2)) t(g, k)
+----
+k, nepochs and seed must be the same for every row of a group
+
+statement error
+SELECT emeans_agg('POINT(10 95)'::GEOMETRY('OGC:CRS84'), 1)
+----
+latitude 95 is outside [-90, 90]
+
+statement error
+SELECT emeans_agg('abc', 1)
+----
+points must be POINT geometries or lists of numbers
+
+statement error
+SELECT emeans_agg(['a', 'b'], 1)
+----
+points must be POINT geometries or lists of numbers
+
+statement error
+SELECT emeans_agg(g, 9) FROM pts WHERE grp = 0
+----
+k must not exceed n
+
+statement error
+SELECT emeans_assign_point([1, 1], [[0, 0]])
+----
+emeans_assign_point: takes a POINT geometry; for vectors use emeans_assign
+
+statement error
+SELECT emeans_assign_point('POINT(1 1)'::GEOMETRY, [[0, 0, 0]])
+----
+centroid 1 must be two finite numbers, x and y

@@ -76,11 +76,12 @@ argument once in bind and caches the norms, so the hot path is a plain n × k ×
 9. Done: the playground in the style of the e-means site's (Lloyd and e-means side by side with Voronoi
    cells, train and held-out test MSE over epochs, playback), in Scala.js and Laminar, on `emeans_trace`
    and the core's constant-step (Lloyd) mode.
-10. Submission to `duckdb/community-extensions`.
+10. Done: spatial clustering. `emeans_agg` (aggregate and window function over POINT geometries or vectors)
+    and `emeans_assign_point`, after PostGIS's `ST_ClusterKMeans`; geographic CRSs on the sphere.
+11. Submission to `duckdb/community-extensions`.
 
-Later, if wanted: an aggregate `emeans_agg(vector, k)` (buffers rows in the state, runs the algorithm
-in finalize; the EMA is order-dependent, so combine concatenates), a DuckDB-WASM 2.0 build for a
-browser demo, and an "IVF-Flat in SQL" example where `emeans_assign` gives the partition key.
+Later, if wanted: an "IVF-Flat in SQL" example where `emeans_assign` gives the partition key (see
+docs/QDRANT.md for how such an index compares).
 
 ## Risks
 

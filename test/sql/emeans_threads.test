@@ -37,3 +37,29 @@ query I
 SELECT count(*) FROM r8
 ----
 500000
+
+# emeans_agg: 50 groups of 12,000 projected points each, combined from partial states on many threads, give
+# the same centroids as on one thread (the points are sorted, and stored relative to the smallest
+# coordinates, before clustering).
+statement ok
+CREATE TABLE geo AS
+SELECT i % 50 AS grp, ('POINT(' || (674000 + (i % 3) * 5000 + (i % 7) * 0.5) || ' ' ||
+                        (6580000 + (i % 3) * 5000 + (i % 11) * 0.5) || ')')::GEOMETRY AS g
+FROM range(600000) t(i);
+
+statement ok
+SET threads = 1;
+
+statement ok
+CREATE TABLE a1 AS SELECT grp, emeans_agg(g, 3) AS r FROM geo GROUP BY grp;
+
+statement ok
+SET threads = 8;
+
+statement ok
+CREATE TABLE a8 AS SELECT grp, emeans_agg(g, 3) AS r FROM geo GROUP BY grp;
+
+query I
+SELECT count(*) FROM a1 JOIN a8 USING (grp) WHERE a1.r IS DISTINCT FROM a8.r
+----
+0

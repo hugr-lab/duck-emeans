@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `emeans_agg(points, k [, nepochs [, seed]])`, an aggregate (and window function) over POINT geometries or
+  vectors, and `emeans_assign_point(point, centroids)`: k-means on maps in the manner of PostGIS's
+  `ST_ClusterKMeans`. Geographic CRSs are clustered on the sphere (antimeridian and poles included) with
+  distances in metres; planar ones keep full precision in projected coordinates; results do not depend
+  on row order or thread count.
+- `emeans_agg` starts from k-means++ seeds (`kmeans_plus_plus` in the core): on 2-D maps a random start
+  left clusters up to 25% worse than PostGIS's `ST_ClusterKMeans`; with k-means++ they are within 3%.
+  `emeans()` keeps the reference's random start.
 - `emeans_trace()`: a run of e-means or Lloyd recorded as frames of centroids with train and held-out test
   MSE. The core gains `constant_step` (with full batches and alpha0 = 1, Lloyd) and a frame callback.
 - The playground (`web/playground/`, Scala.js + Laminar): Lloyd and e-means side by side with Voronoi

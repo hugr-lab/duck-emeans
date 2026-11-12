@@ -29,6 +29,7 @@ static bool (*const REGISTRATIONS[])(duckdb_connection) = {
     emeans_register_cluster,
     emeans_register_assign,
     emeans_register_trace,
+    emeans_register_agg,
 };
 
 DUCKDB_EXTENSION_ENTRYPOINT(duckdb_connection connection, duckdb_extension_info info,

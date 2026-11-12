@@ -1,4 +1,4 @@
-.PHONY: clean clean_all test_core test_threads crap compare_faiss bench compare_qdrant help
+.PHONY: clean clean_all test_core test_threads crap compare_faiss bench compare_postgis compare_qdrant help
 
 PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
@@ -30,7 +30,7 @@ test: test_debug
 test_debug: test_extension_debug
 test_release: test_extension_release
 
-CORE_SOURCES := src/core/recipe.c src/core/rng.c src/core/assign.c src/core/parallel.c src/core/emeans.c
+CORE_SOURCES := src/core/recipe.c src/core/rng.c src/core/assign.c src/core/parallel.c src/core/emeans.c src/core/geo.c
 
 # On macOS the kernel's dot products go to Accelerate (src/core/assign.c), as in the extension build.
 ifeq ($(shell uname -s),Darwin)
@@ -65,6 +65,14 @@ compare_faiss: release
 
 bench: release
 	$(REFERENCE_PYTHON) bench/run_bench.py build/release/$(EXTENSION_NAME).duckdb_extension
+
+# emeans_agg against PostGIS's ST_ClusterKMeans: behaviour, speed, quality and docs/postgis_comparison.png
+# (see docs/POSTGIS.md). Needs a PostgreSQL with PostGIS reachable at POSTGIS_DSN.
+POSTGIS_DSN ?= host=127.0.0.1 port=5432 user=postgres dbname=postgres
+compare_postgis: release
+	uv run --quiet --no-project --python 3.12 --with duckdb==2.0.0 --with numpy==2.3.4 \
+		--with "psycopg[binary]==3.2.10" --with matplotlib==3.10.7 python -I bench/compare_postgis.py \
+		build/release/$(EXTENSION_NAME).duckdb_extension "$(POSTGIS_DSN)" docs/postgis_comparison.png
 
 # Nearest-neighbour search against DuckDB's HNSW (vss) and Qdrant; see docs/QDRANT.md. Needs a running
 # Qdrant on 127.0.0.1:16333/16334 and the data set's Parquet files in QDRANT_DATA.

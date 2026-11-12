@@ -33,6 +33,7 @@ typedef struct {
 	int64_t *count;       // n_j of the current batch, k
 	int64_t *pass_count;  // counts of the closing pass, k
 	int64_t *perm;        // n
+	double *min_dist;     // k-means++: each row's squared distance to the nearest chosen centroid, n
 	donor_key *keys;      // k
 	int32_t *batch_label; // B
 	int32_t *touched;     // clusters with n_j > 0 in the current batch, k
@@ -67,6 +68,7 @@ void emeans_default_params(emeans_params *p) {
 	p->alpha0 = 0;
 	p->unused_threshold = -1;
 	p->init = NULL;
+	p->kmeans_plus_plus = 0;
 	p->max_work = 0;
 	p->spherical = 0;
 	p->threads = 1;
@@ -122,7 +124,8 @@ static double total_rows(int64_t n, double nepochs) {
 }
 
 static int check_budget(const run_state *s, const emeans_params *p, char *err) {
-	double work = total_rows(s->n, p->nepochs) * (double)s->k * (double)s->d;
+	double rows = total_rows(s->n, p->nepochs) + (p->kmeans_plus_plus && !p->init ? (double)s->n : 0.0);
+	double work = rows * (double)s->k * (double)s->d;
 	if (p->max_work > 0 && work > p->max_work) {
 		snprintf(err, EMEANS_ERR_LEN, "work limit exceeded: rows x k x d over all passes is %.4g, the limit %.4g",
 		         work, p->max_work);
@@ -146,7 +149,7 @@ static int prepare(run_state *s, const emeans_params *p, char *err) {
 static double workspace_bytes(const run_state *s, int64_t b) {
 	double n = (double)s->n, k = (double)s->k, kd = k * (double)s->d;
 	double scratch = (double)s->threads * (double)s->scratch_floats;
-	return 8.0 * (2.0 * kd + k + (double)b) + 8.0 * (2.0 * k + n) + (double)sizeof(donor_key) * k +
+	return 8.0 * (2.0 * kd + k + (double)b) + 8.0 * (2.0 * k + 2.0 * n) + (double)sizeof(donor_key) * k +
 	       4.0 * ((double)b + 2.0 * k) + 4.0 * (2.0 * kd + scratch) + 4.0 * (kd + k);
 }
 
@@ -172,6 +175,7 @@ static int workspace_alloc(run_state *s, int64_t b) {
 	ws->count = carve(&cursor, k, sizeof(int64_t));
 	ws->pass_count = carve(&cursor, k, sizeof(int64_t));
 	ws->perm = carve(&cursor, n, sizeof(int64_t));
+	ws->min_dist = carve(&cursor, n, sizeof(double));
 	ws->keys = carve(&cursor, k, sizeof(donor_key));
 	ws->batch_label = carve(&cursor, b, sizeof(int32_t));
 	ws->touched = carve(&cursor, k, sizeof(int32_t));
@@ -434,17 +438,70 @@ static void run_pass(run_state *s, int64_t pass, int64_t rows, int closing) {
 	s->out->obj[pass] = obj;
 }
 
-static void init_centroids(run_state *s, const float *init) {
-	float *c = s->out->centroids;
-	if (init) {
-		memcpy(c, init, (size_t)(s->k * s->d) * sizeof(float));
+//===--------------------------------------------------------------------===//
+// Initial centroids
+//===--------------------------------------------------------------------===//
+
+static void copy_row(run_state *s, int64_t j, int64_t row) {
+	memcpy(s->out->centroids + j * s->d, s->x + row * s->d, (size_t)s->d * sizeof(float));
+}
+
+// Lowers each row's distance to the nearest chosen centroid with centroid j; returns the new total.
+static double update_min_dist(run_state *s, int64_t j) {
+	const float *c = s->out->centroids + j * s->d;
+	double total = 0;
+	for (int64_t i = 0; i < s->n; i++) {
+		double d = emeans_sq_dist(s->x + i * s->d, c, s->d);
+		s->ws.min_dist[i] = j == 0 || d < s->ws.min_dist[i] ? d : s->ws.min_dist[i];
+		total += s->ws.min_dist[i];
+	}
+	return total;
+}
+
+// The row a draw lands on when rows are weighted by min_dist; the last row with weight if rounding runs
+// past the end. A total of 0 (every row on a centroid already) gives a uniform draw.
+static int64_t weighted_row(run_state *s, emeans_rng *rng, double total) {
+	if (!(total > 0)) {
+		return (int64_t)emeans_rng_below(rng, (uint64_t)s->n);
+	}
+	double target = emeans_rng_open01(rng) * total;
+	int64_t last = 0;
+	for (int64_t i = 0; i < s->n; i++) {
+		last = s->ws.min_dist[i] > 0 ? i : last;
+		target -= s->ws.min_dist[i];
+		if (target <= 0 && s->ws.min_dist[i] > 0) {
+			return i;
+		}
+	}
+	return last;
+}
+
+// k-means++ (Arthur and Vassilvitskii 2007): a uniform first centroid, then each next one drawn with
+// probability proportional to its squared distance from the nearest centroid chosen so far. One pass
+// over the rows per centroid, like a pass of the loop.
+static void init_plus_plus(run_state *s, emeans_rng *rng) {
+	copy_row(s, 0, (int64_t)emeans_rng_below(rng, (uint64_t)s->n));
+	double total = update_min_dist(s, 0);
+	for (int64_t j = 1; j < s->k; j++) {
+		copy_row(s, j, weighted_row(s, rng, total));
+		total = update_min_dist(s, j);
+	}
+}
+
+static void init_centroids(run_state *s, const emeans_params *p) {
+	if (p->init) {
+		memcpy(s->out->centroids, p->init, (size_t)(s->k * s->d) * sizeof(float));
 		return;
 	}
 	emeans_rng rng;
 	emeans_rng_seed(&rng, s->seed, INIT_STREAM);
+	if (p->kmeans_plus_plus) {
+		init_plus_plus(s, &rng);
+		return;
+	}
 	emeans_shuffle_prefix(&rng, s->ws.perm, s->n, s->k);
 	for (int64_t j = 0; j < s->k; j++) {
-		memcpy(c + j * s->d, s->x + s->ws.perm[j] * s->d, (size_t)s->d * sizeof(float));
+		copy_row(s, j, s->ws.perm[j]);
 	}
 }
 
@@ -480,7 +537,7 @@ static void close_centroids(run_state *s) {
 }
 
 static void run(run_state *s, const emeans_params *p) {
-	init_centroids(s, p->init);
+	init_centroids(s, p);
 	init_state(s);
 	emit_frame(s, 0);
 	int64_t passes = s->recipe.n_passes;
