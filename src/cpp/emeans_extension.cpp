@@ -1,8 +1,7 @@
-// The C++ entry point. Stage 1 of the move to the C++ API (docs/PLAN.md): the functions are still the C
-// implementations in src/functions, registered through the C API on a connection to the loader's
-// database. Inside DuckDB a duckdb_connection is a Connection * (duckdb_connect in
-// src/main/capi/v1/duckdb-c.cpp), so the C registrations run unchanged. Later stages replace them with
-// native C++ functions one at a time.
+// The entry point. Most functions are the C implementations in src/functions, registered through
+// DuckDB's C API on a connection to the loader's database: inside DuckDB a duckdb_connection is a
+// Connection * (duckdb_connect in src/main/capi/v1/duckdb-c.cpp). emeans_cluster_id is registered here
+// in C++ (src/cpp/emeans_window.cpp). docs/PLAN.md, "Moving to the C++ API", says which move next.
 
 #define DUCKDB_EXTENSION_MAIN
 

@@ -3,15 +3,13 @@
 // The recipe e-means would use for n rows of dimension d into k clusters over nepochs passes. NULL n, k
 // or d gives NULL; NULL nepochs means 5 and NULL batch_law means 'auto'.
 
-#include "duckdb_extension.h"
+#include "duckdb.h"
 
 #include "emeans_functions.h"
 #include "recipe.h"
 
 #include <stdio.h>
 #include <string.h>
-
-DUCKDB_EXTENSION_EXTERN
 
 #define DEFAULT_NEPOCHS 5.0
 #define N_FIELDS 5

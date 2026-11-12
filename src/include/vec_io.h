@@ -6,7 +6,7 @@
 // DuckDB's implicit casts). They are copied into a float buffer, checked for NULLs, equal lengths and
 // finite values. Output lists are appended to the list vector's child, which may move on reserve.
 
-#include "duckdb_extension.h"
+#include "duckdb.h"
 #include "emeans_mem.h"
 
 #include <stdbool.h>

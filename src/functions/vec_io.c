@@ -7,8 +7,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-DUCKDB_EXTENSION_EXTERN
-
 emeans_buffer emeans_managed_buffer(emeans_mem *mem) {
 	return (emeans_buffer) {NULL, 0, 1, mem, NULL};
 }

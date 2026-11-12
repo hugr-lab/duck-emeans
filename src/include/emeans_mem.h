@@ -2,11 +2,10 @@
 
 // Large buffers: the input matrices, the aggregate's points and the core's workspace.
 //
-// In the C++ build (src/cpp/emeans_mem.cpp) a block comes from the database's buffer manager: it counts
-// against memory_limit, an allocation past the limit fails with DuckDB's out-of-memory message instead of
-// taking the process down, and a block that is not pinned may be written to temp_directory when memory
-// runs short and read back on the next pin. In the C API build (src/functions/emeans_capi.c) a block
-// is malloc'd and pinning does nothing.
+// A block comes from the database's buffer manager (src/cpp/emeans_mem.cpp): it counts against
+// memory_limit, an allocation past the limit fails with DuckDB's out-of-memory message instead of taking
+// the process down, and a block that is not pinned may be written to temp_directory when memory runs short
+// and read back on the next pin.
 //
 // A block is pinned when allocated. Its data pointer is valid only while it is pinned; a pin may move it.
 // Blocks are not thread safe: one thread uses a block at a time.
@@ -15,7 +14,7 @@
 
 #include <stddef.h>
 
-typedef struct emeans_mem emeans_mem; // a database's buffer manager; NULL in the C API build
+typedef struct emeans_mem emeans_mem; // a database's buffer manager
 typedef struct emeans_block emeans_block;
 
 // A pinned block of `bytes` bytes (contents undefined), or NULL with a message in err (EMEANS_ERR_LEN).

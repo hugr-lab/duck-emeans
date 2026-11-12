@@ -8,13 +8,9 @@
 
 ## Build
 
-The extension is moving from the stable C API to DuckDB's C++ API (docs/PLAN.md, "Moving to the C++
-API"). Two builds exist until that is finished:
-
 ```sh
 GEN=ninja make release   # DuckDB from the submodule + build/release/extension/emeans/emeans.duckdb_extension
 GEN=ninja make debug     # same, debug
-make -f Makefile.capi configure release   # the C API build: build/release/emeans.duckdb_extension
 ```
 
 `make release` is the extension template's build: it compiles DuckDB with the extension linked into
@@ -23,9 +19,9 @@ later ones only recompile what changed. The binary loads into DuckDB v2.0.0 only
 Python wheel. `OVERRIDE_GIT_DESCRIBE=v2.0.0` in the Makefile stamps that version: DuckDB 2.0 does not
 read it from git, and without it the binary names the submodule's commit hash.
 
-In the C++ build `src/cpp/emeans_extension.cpp` is the entry point, and the C sources in
-`src/functions` include `src/include/cpp_shim/duckdb_extension.h` instead of `duckdb_capi/`'s, so
-their `duckdb_*` calls go straight to the C API inside DuckDB.
+`src/cpp/emeans_extension.cpp` is the entry point. The C sources in `src/functions` include `duckdb.h`
+and call DuckDB's C API inside the host; `src/cpp` holds what needs the C++ API (docs/PLAN.md, "Moving
+to the C++ API"). CMakeLists.txt only builds as part of DuckDB's build.
 
 `compile_commands.json` is written to `build/release/`.
 
@@ -34,11 +30,6 @@ their `duckdb_*` calls go straight to the C API inside DuckDB.
 The extension is built and tested for DuckDB 2.0.0, the `duckdb` submodule. A C++ extension is tied
 to the exact DuckDB version it was built against; a new DuckDB release means moving the submodule and
 `duckdb_version` in `.github/workflows/MainDistributionPipeline.yml`.
-
-For the C API build (Makefile.capi): the stable C extension API that DuckDB 2.0.0 ships is v1.5.6.
-Its `duckdb_extension.h` refuses any other major version and has the same function set as the 1.5.6
-header, so `TARGET_DUCKDB_VERSION=v1.5.6` names the API version the binary declares, and
-`duckdb_capi/*.h` are the headers from that tag.
 
 ## Tests
 
@@ -73,6 +64,5 @@ checks it without lizard or a report. To score the Python tooling itself with
 - In `src/functions`, anything that grows with the number of rows comes from `emeans_mem.h` blocks
   (DuckDB's buffer manager in the C++ build), not malloc: `emeans_managed_buffer` for input matrices,
   `emeans_mem_allocator` for the fit. Small and per-row buffers stay on the heap.
-- `test/sql/emeans_memory.test` passes only in the C++ build; the C API build (`Makefile.capi`) mallocs.
 - Keep every function at CRAP < 10 (`make crap`). In practice: cyclomatic complexity below 10 and tests
   for every branch.

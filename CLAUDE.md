@@ -6,17 +6,16 @@ Guidance for coding agents working in this repository.
 
 `emeans`: a DuckDB loadable extension for e-means clustering (Bessa et al., arXiv 2611.09501): mini-batch
 k-means with EMA centroid updates, batch size and step from fitted scaling laws, dead-cluster revival
-and a closing mean pass. For DuckDB 2.0.0. The numerics and SQL functions are C11; the extension is
-moving from the stable C API to DuckDB's C++ API (docs/PLAN.md, "Moving to the C++ API"): stage 1
-builds it as a C++ extension whose entry point registers the C functions through the C API.
+and a closing mean pass. For DuckDB 2.0.0, as a C++ extension built with DuckDB (the `duckdb`
+submodule). The numerics and most SQL functions are C11, registered through DuckDB's C API from the C++
+entry point; what needs the C++ API is in `src/cpp` (docs/PLAN.md, "Moving to the C++ API").
 
 ## Hard rules
 
 - `src/core/` and `src/functions/` are C11. C++ goes in `src/cpp/` and follows the stages in
   docs/PLAN.md; do not add C++ elsewhere until a stage says so.
-- Until stage 4, `src/functions/` must also build as the C API extension (`make -f Makefile.capi`):
-  only call C API functions present in `duckdb_capi/` (extension API v1.5.6, what DuckDB 2.0.0 ships).
-  No `duckdb_extension_v2.h`, no `USE_UNSTABLE_C_API`. Tests run on DuckDB 2.0.0 only.
+- `src/functions/` calls DuckDB's C API through `duckdb.h` inside the host (there is no separate C API
+  build any more). Tests run on DuckDB 2.0.0 only.
 - `src/core/` has no DuckDB dependency.
 - The reference is `faiss/contrib/e_means/base.py` and `e_means.py` (MIT), not the paper: the shipped
   scaling-law coefficients differ from the paper's Table 2. Do not copy the Python; reimplement.
@@ -68,15 +67,14 @@ Use `rtk` as a command prefix in this environment (see the user's global instruc
 
 ## Gotchas
 
-- The C++ build needs the shim header first: DuckDB's own `src/include/duckdb_extension.h` turns every
-  `duckdb_*` call into a function-table lookup that the C++ entry point never fills
-  (`target_include_directories(... BEFORE ...)` in CMakeLists.txt).
+- Include `duckdb.h`, never `duckdb_extension.h`: the latter turns every `duckdb_*` call into a lookup
+  in a C API extension's function table, which this extension's C++ entry point never fills.
 - Without `OVERRIDE_GIT_DESCRIBE=v2.0.0` a DuckDB 2.0 build is stamped with the commit hash, and the
   binary refuses to load into the released DuckDB.
 - DuckDB 2.0 rejects `x -> ...` lambdas by default. Use `lambda x: ...` in tests and docs.
 - `generate_series` has no DOUBLE overload; build grids from `range()`.
 - The sqllogictest runner stops at the first failing file.
-- Every C function stays at CRAP < 10 (`make crap`): small, single-purpose functions; core allocation
+- Every C and C++ function stays at CRAP < 10 (`make crap`): small, single-purpose functions; core allocation
   through `emeans_malloc`/`emeans_calloc`/`emeans_realloc` so fault injection reaches the out-of-memory
   paths.
 - No mutable global or static state in src/: calls run concurrently on DuckDB's threads.
@@ -84,6 +82,5 @@ Use `rtk` as a command prefix in this environment (see the user's global instruc
   k-means++ centroid. The SQL functions pass `emeans_query_interrupted` with the query captured at bind
   (`emeans_query.h`); a new loop over the rows needs a check too. `emeans_agg` has no query (C API
   aggregate) and keeps a fixed work limit; `emeans_max_work` (default 0, none) caps the rest up front.
-- With no git commits, set `EXTENSION_VERSION` or the metadata footer is corrupt.
 - Expected values in tests must be derived from the model, not copied from output. Carry the arithmetic
   in a comment.

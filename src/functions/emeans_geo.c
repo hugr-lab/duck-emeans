@@ -4,7 +4,7 @@
 // (see geo.h) nearest is along the sphere and distance is the great-circle distance in metres; otherwise
 // it is the Euclidean distance in the CRS's units. NULL, or POINT EMPTY, gives NULL.
 
-#include "duckdb_extension.h"
+#include "duckdb.h"
 
 #include "emeans_functions.h"
 #include "geo.h"
@@ -14,8 +14,6 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
-
-DUCKDB_EXTENSION_EXTERN
 
 enum { ROW_OK = 0, ROW_NULL = 1, ROW_ERROR = 2 };
 

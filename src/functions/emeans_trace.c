@@ -12,7 +12,7 @@
 // every iteration. revival (default true) is e-means's dead-cluster revival. test may be NULL. NULL
 // train or k gives NULL; other NULLs mean the defaults.
 
-#include "duckdb_extension.h"
+#include "duckdb.h"
 
 #include "assign.h"
 #include "emeans.h"
@@ -24,8 +24,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-DUCKDB_EXTENSION_EXTERN
 
 #define N_ARGS 9
 #define N_FRAME_FIELDS 5
