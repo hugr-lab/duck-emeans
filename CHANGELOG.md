@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Browser demo (`web/`, GitHub Pages): DuckDB-WASM with the `wasm_eh` build of the extension, clustering
+  points in the plane and timing embedding-sized vectors (d up to 1536).
 - Threads: a large batch's assignment is split across up to `emeans_threads` threads (default: DuckDB's
   `threads` setting), with identical results on any number. POSIX threads, Win32 threads, and one thread
   in WASM.

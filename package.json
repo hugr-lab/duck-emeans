@@ -1,0 +1,9 @@
+{
+  "name": "duck-emeans-demo",
+  "private": true,
+  "type": "module",
+  "description": "The browser demo in web/: tests for its pure logic",
+  "scripts": {
+    "test": "node --test web/"
+  }
+}

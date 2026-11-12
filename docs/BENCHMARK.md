@@ -44,6 +44,19 @@ it may use for a large batch, and the result is the same bits on any number.
 | 1,000,000 | 16 | 256 | 0.83 s | 0.35 s | 0.55 s | 5.10 s |
 | 1,000,000 | 128 | 256 | 2.44 s | 1.23 s | 2.52 s | 2.68 s |
 
+Embedding-sized vectors (sentence-transformer and OpenAI dimensions), n = 100,000, k = 256, with the
+final objective of each:
+
+| d | emeans(), 1 thread | emeans(), 18 threads | NumpyEmeans | Lloyd, 25 iterations | objective: emeans() / NumpyEmeans / Lloyd |
+|---:|---:|---:|---:|---:|---:|
+| 768 | 0.91 s | 0.67 s | 1.26 s | 0.38 s | 4055 / 4089 / 4320 |
+| 1536 | 1.77 s | 1.48 s | 2.48 s | 0.86 s | 8209 / 8203 / 8583 |
+
+At these dimensions FAISS's Lloyd is the fastest, because each of its iterations is one large sgemm over
+all rows, but after 25 iterations its objective is 4% to 6% worse than either e-means after 2 epochs.
+Threads help `emeans()` less here: the assignment is split, but the per-batch accumulation and the
+centroid updates, which grow with d, run on one thread.
+
 NumpyEmeans and Lloyd ran with FAISS's default of 18 OpenMP threads; with one OpenMP thread NumpyEmeans
 was about as fast at d = 128 (2.50 s), because its distances go to Accelerate's sgemm, which runs on the
 M5's matrix units whatever the OpenMP thread count.

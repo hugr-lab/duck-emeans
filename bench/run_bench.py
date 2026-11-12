@@ -21,7 +21,9 @@ from faiss.contrib.e_means import NumpyEmeans
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test", "python"))
 from compare_faiss import connect, gaussian_mixture, objective, register_points  # noqa: E402
 
-SHAPES = [(100_000, 16, 256), (100_000, 128, 256), (1_000_000, 16, 256), (1_000_000, 128, 256)]
+SHAPES = [(100_000, 16, 256), (100_000, 128, 256), (1_000_000, 16, 256), (1_000_000, 128, 256),
+          # Embedding sizes: sentence-transformer (768) and OpenAI text-embedding-3-small (1536) dimensions.
+          (100_000, 768, 256), (100_000, 1536, 256)]
 NEPOCHS = 2.0
 REPEATS = 3
 
