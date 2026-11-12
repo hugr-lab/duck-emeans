@@ -145,7 +145,7 @@ def build_qdrant(client, base):
         client.delete_collection(name)
     client.create_collection(name, vectors_config=models.VectorParams(size=D, distance=models.Distance.COSINE))
     def upload_and_index():
-        client.upload_collection(name, vectors=base, ids=list(range(len(base))), batch_size=512, parallel=4)
+        client.upload_collection(name, vectors=base, ids=list(range(len(base))), batch_size=512, parallel=1)  # forked workers and gRPC do not mix reliably
         while True:
             info = client.get_collection(name)
             if info.status == models.CollectionStatus.GREEN and (info.indexed_vectors_count or 0) >= len(base):
