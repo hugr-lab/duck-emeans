@@ -3,7 +3,9 @@
 // The e-means loop (Bessa et al., arXiv 2611.09501; reference faiss/contrib/e_means): mini-batch k-means
 // whose centroids follow an exponential moving average of their batch means, with the batch size and
 // step from the recipe (recipe.h), dead clusters revived by splitting a live one, and a closing pass
-// that sets every centroid to the exact mean of the rows it was assigned in that pass.
+// that sets every centroid to the exact mean of the rows it was assigned in that pass. The spherical
+// variant assigns each row to the centroid direction with the largest inner product and returns unit
+// centroids; like the reference it does not normalise the rows, which should be unit length already.
 // No DuckDB dependency; docs/ALGORITHM.md has the formulas.
 
 #include "recipe.h"
@@ -24,6 +26,7 @@ typedef struct {
 	double unused_threshold; // tau for revival; < 0 (default) means 0.1 above d = 2 and 0 (off) otherwise
 	const float *init;       // k x d initial centroids, or NULL (default) for k distinct random rows
 	double max_work;         // limit on rows x k x d summed over all passes; 0 (default) = none
+	int spherical;           // assign by the largest inner product with the centroid directions (default 0)
 } emeans_params;
 
 void emeans_default_params(emeans_params *p);
@@ -32,7 +35,7 @@ void emeans_default_params(emeans_params *p);
 typedef struct {
 	float *centroids;
 	int32_t *labels;     // each row's cluster in the last pass; -1 for rows a fractional single pass skipped
-	double *obj;         // per pass: the sum of squared distances, measured while the centroids move
+	double *obj;         // per pass: the sum of squared distances (spherical: of 2 - 2 x.c), while the centroids move
 	int64_t n_splits;    // dead clusters revived
 	emeans_recipe recipe; // what was used
 } emeans_output;

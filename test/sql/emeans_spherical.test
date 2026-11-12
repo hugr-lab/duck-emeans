@@ -1,0 +1,68 @@
+# name: test/sql/emeans_spherical.test
+# description: emeans_spherical() and emeans_assign_spherical() cluster and assign unit vectors by direction
+# group: [emeans]
+
+require emeans
+
+# Four unit vectors around each axis, tilted by +-0.1 in the other two coordinates. The tilts cancel in
+# every cluster's sum, so each closing mean points exactly along its axis and normalises to it.
+statement ok
+CREATE TABLE dirs AS
+SELECT list_transform(raw, lambda v: list_transform(v, lambda e: e / sqrt(list_dot_product(v, v)))) AS x
+FROM (SELECT [[1, 0.1, 0], [1, -0.1, 0], [1, 0, 0.1], [1, 0, -0.1],
+              [0.1, 1, 0], [-0.1, 1, 0], [0, 1, 0.1], [0, 1, -0.1],
+              [0.1, 0, 1], [-0.1, 0, 1], [0, 0.1, 1], [0, -0.1, 1]]::DOUBLE[][] AS raw);
+
+statement ok
+CREATE TABLE sfit AS SELECT x, emeans_spherical(x, 3, 3.0) AS r FROM dirs;
+
+query I
+SELECT list_sort(r.centroids) FROM sfit
+----
+[[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]]
+
+query IIII
+SELECT len(list_distinct(r.labels[1:4])), len(list_distinct(r.labels[5:8])), len(list_distinct(r.labels[9:12])),
+       len(list_distinct([r.labels[1], r.labels[5], r.labels[9]]))
+FROM sfit
+----
+1	1	1	3
+
+# Every point is at cosine 1 / sqrt(1.01) from its axis, so with the centroids on the axes the objective
+# is 12 * (2 - 2 / sqrt(1.01)) = 0.1191, the optimum. A pass's objective is measured while the centroids
+# still move, so it is above that and falls from pass to pass.
+query III
+SELECT len(r.obj), r.obj[1] > r.obj[2] AND r.obj[2] > r.obj[3],
+       r.obj[3] BETWEEN 12 * (2 - 2 / sqrt(1.01)) - 1e-9 AND 2 * 12 * (2 - 2 / sqrt(1.01))
+FROM sfit
+----
+3	true	true
+
+# The spherical labels agree with emeans_assign_spherical against the returned centroids.
+query I
+SELECT list_transform(x, lambda v: (emeans_assign_spherical(v, r.centroids)).label) = r.labels FROM sfit
+----
+true
+
+# emeans_assign_spherical scores against the directions of the centroids: (2, 0, 0) and (0, 3, 0) are
+# e1 and e2, and (0.6, 0.8, 0) has inner product 0.8 with e2. Equal similarity goes to the lower label.
+query II
+SELECT emeans_assign_spherical([0.6, 0.8, 0], [[2, 0, 0], [0, 3, 0]]),
+       emeans_assign_spherical([0.6, 0.6], [[1, 0], [0, 1]])
+----
+{'label': 2, 'similarity': 0.800000011920929}	{'label': 1, 'similarity': 0.6000000238418579}
+
+query I
+SELECT emeans_assign_spherical(NULL::DOUBLE[], [[1, 0]]) IS NULL
+----
+true
+
+statement error
+SELECT emeans_spherical([[1, 0], [0, NULL]], 1)
+----
+emeans_spherical: vector 2 has a NULL at element 2
+
+statement error
+SELECT emeans_assign_spherical([1, 0, 0], [[1, 0]])
+----
+emeans_assign_spherical: the vector has 3 elements, the centroids 2

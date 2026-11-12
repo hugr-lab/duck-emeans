@@ -10,6 +10,9 @@ a pinned environment) and takes a few minutes. Exits 1 if any check fails.
    by faiss.knn). Lloyd with 25 iterations (faiss.Kmeans) is reported for context, as in the paper.
 3. Assignment: emeans_assign() gives the same nearest centroid as faiss.knn for every point, up to
    float32 ties.
+4. Spherical: emeans_spherical() against NumpyEmeans(spherical=True) on the same mixtures with every row
+   normalised, scored by the mean of 2 - 2 x.c over the best centroid; and emeans_assign_spherical()
+   against faiss.knn with the inner-product metric.
 
 Random numbers differ (PCG32 against numpy), so runs agree in distribution, not in bits.
 """
@@ -61,10 +64,18 @@ def gaussian_mixture(n, d, centres, seed):
     return (means[which] + rng.standard_normal((n, d))).astype("float32")
 
 
-def objective(x, centroids):
-    """Mean squared distance of each point to its nearest centroid."""
-    dist, _ = faiss.knn(x, np.ascontiguousarray(centroids, dtype="float32"), 1)
+def objective(x, centroids, spherical=False):
+    """Mean squared distance of each point to its nearest centroid; spherical, the mean of 2 - 2 x.c."""
+    c = np.ascontiguousarray(centroids, dtype="float32")
+    if spherical:
+        sim, _ = faiss.knn(x, c, 1, metric=faiss.METRIC_INNER_PRODUCT)
+        return float((2 - 2 * sim).mean())
+    dist, _ = faiss.knn(x, c, 1)
     return float(dist.mean())
+
+
+def normalised(x):
+    return (x / np.linalg.norm(x, axis=1, keepdims=True)).astype("float32")
 
 
 #===----------------------------------------------------------------------===#
@@ -96,15 +107,16 @@ def check_recipes(con):
 # 2. Quality
 #===----------------------------------------------------------------------===#
 
-def run_ours(con, k, seed):
+def run_ours(con, k, seed, spherical=False):
+    fn = "emeans_spherical" if spherical else "emeans"
     start = time.perf_counter()
-    centroids = con.sql(f"SELECT (emeans(list(v ORDER BY id), {k}, {NEPOCHS}, {seed})).centroids FROM pts").fetchall()[0][0]
+    centroids = con.sql(f"SELECT ({fn}(list(v ORDER BY id), {k}, {NEPOCHS}, {seed})).centroids FROM pts").fetchall()[0][0]
     return np.array(centroids, dtype="float32"), time.perf_counter() - start
 
 
-def run_reference(x, k, seed):
+def run_reference(x, k, seed, spherical=False):
     start = time.perf_counter()
-    centroids, _ = NumpyEmeans(x.shape[1], k, nepochs=NEPOCHS, seed=seed).train(x)
+    centroids, _ = NumpyEmeans(x.shape[1], k, nepochs=NEPOCHS, seed=seed, spherical=spherical).train(x)
     return np.asarray(centroids, dtype="float32"), time.perf_counter() - start
 
 
@@ -115,42 +127,55 @@ def run_lloyd(x, k):
     return kmeans.centroids, time.perf_counter() - start
 
 
-def check_quality(con, n, d, k):
-    print(f"2. quality: n = {n}, d = {d}, k = {k}, nepochs = {NEPOCHS}, {len(SEEDS)} seeds")
+def check_quality(con, n, d, k, spherical=False):
+    kind = "spherical " if spherical else ""
+    print(f"{'4' if spherical else '2'}. {kind}quality: n = {n}, d = {d}, k = {k}, nepochs = {NEPOCHS}, {len(SEEDS)} seeds")
     x = gaussian_mixture(n, d, 2 * k, seed=d)
+    x = normalised(x) if spherical else x
     register_points(con, x)
     ours, theirs = [], []
     for seed in SEEDS:
-        c, t_ours = run_ours(con, k, seed)
-        ours.append(objective(x, c))
-        c, t_ref = run_reference(x, k, seed)
-        theirs.append(objective(x, c))
+        c, t_ours = run_ours(con, k, seed, spherical)
+        ours.append(objective(x, c, spherical))
+        c, t_ref = run_reference(x, k, seed, spherical)
+        theirs.append(objective(x, c, spherical))
         print(f"     seed {seed}: emeans {ours[-1]:.5f} ({t_ours:.1f} s)   NumpyEmeans {theirs[-1]:.5f} ({t_ref:.1f} s)")
-    lloyd, t_lloyd = run_lloyd(x, k)
-    print(f"     Lloyd, 25 iterations: {objective(x, lloyd):.5f} ({t_lloyd:.1f} s)")
+    if not spherical:
+        lloyd, t_lloyd = run_lloyd(x, k)
+        print(f"     Lloyd, 25 iterations: {objective(x, lloyd):.5f} ({t_lloyd:.1f} s)")
     mean_ours, mean_theirs = np.mean(ours), np.mean(theirs)
     gap = (mean_ours - mean_theirs) / mean_theirs
-    check(f"d = {d}: mean objective within {OBJ_TOLERANCE:.0%} of NumpyEmeans", abs(gap) <= OBJ_TOLERANCE,
+    check(f"{kind}d = {d}: mean objective within {OBJ_TOLERANCE:.0%} of NumpyEmeans", abs(gap) <= OBJ_TOLERANCE,
           f"{mean_ours:.5f} against {mean_theirs:.5f} ({gap:+.3%})")
-    return x, run_ours(con, k, SEEDS[0])[0]
+    return x, run_ours(con, k, SEEDS[0], spherical)[0]
 
 
 #===----------------------------------------------------------------------===#
 # 3. Assignment
 #===----------------------------------------------------------------------===#
 
-def check_assign(con, x, centroids):
-    print(f"3. emeans_assign against faiss.knn, n = {x.shape[0]}, k = {centroids.shape[0]}")
+def exact_score(x, centroids, spherical):
+    """Exact (float64) distance, or minus the inner product, of row i to centroid j."""
+    def score(i, j):
+        a, b = x[i].astype("float64"), centroids[j].astype("float64")
+        return -float(a @ b) if spherical else float(np.sum((a - b) ** 2))
+    return score
+
+
+def check_assign(con, x, centroids, spherical=False):
+    fn = "emeans_assign_spherical" if spherical else "emeans_assign"
+    print(f"{'4' if spherical else '3'}. {fn} against faiss.knn, n = {x.shape[0]}, k = {centroids.shape[0]}")
     con.execute("CREATE OR REPLACE TABLE cents AS SELECT $c::FLOAT[][] AS c", {"c": centroids.tolist()})
     start = time.perf_counter()
-    rows = con.sql("SELECT (emeans_assign(p.v, cents.c)).label FROM pts p, cents ORDER BY p.id").fetchall()
+    rows = con.sql(f"SELECT ({fn}(p.v, cents.c)).label FROM pts p, cents ORDER BY p.id").fetchall()
     elapsed = time.perf_counter() - start
     ours = np.array([r[0] - 1 for r in rows])
-    dist, theirs = faiss.knn(x, centroids, 1)
+    metric = faiss.METRIC_INNER_PRODUCT if spherical else faiss.METRIC_L2
+    _, theirs = faiss.knn(x, centroids, 1, metric=metric)
     differ = np.flatnonzero(ours != theirs[:, 0])
-    # A disagreement is a float32 tie when both centroids are equally near in exact arithmetic.
-    exact = lambda i, j: float(np.sum((x[i].astype("float64") - centroids[j].astype("float64")) ** 2))
-    ties = sum(abs(exact(i, ours[i]) - exact(i, theirs[i, 0])) <= 1e-5 * exact(i, theirs[i, 0]) for i in differ)
+    # A disagreement is a float32 tie when both centroids score the same in exact arithmetic.
+    exact = exact_score(x, centroids, spherical)
+    ties = sum(abs(exact(i, ours[i]) - exact(i, theirs[i, 0])) <= 1e-5 * abs(exact(i, theirs[i, 0])) for i in differ)
     agreement = 1 - (len(differ) - ties) / len(ours)
     check(f"same nearest centroid for at least {ASSIGN_AGREEMENT:.2%} (ties aside)", agreement >= ASSIGN_AGREEMENT,
           f"{len(differ)} differ, {ties} of them ties; {elapsed:.1f} s")
@@ -164,6 +189,8 @@ def main():
     check_quality(con, 100_000, 16, 256)
     x, centroids = check_quality(con, 100_000, 128, 256)
     check_assign(con, x, centroids)
+    x, centroids = check_quality(con, 100_000, 128, 256, spherical=True)
+    check_assign(con, x, centroids, spherical=True)
     print("\nFAIL: " + ", ".join(failures) if failures else "\nPASS: every check")
     return 1 if failures else 0
 

@@ -54,13 +54,15 @@ assignments, so a label is not necessarily the nearest final centroid; `emeans_a
   reseeds from (seed · 1000003 + e) mod 2^32 as the reference does.
 - u for the Gumbel keys is drawn from the open interval (0, 1), so no key is infinite; the reference
   draws from (0, 1] and clamps.
-- Distances are exact squared differences accumulated in double. The reference (FAISS) computes
-  ‖x‖² + ‖c‖² − 2 x·c in float32, which can differ in the last bits and, rarely, in a tie.
+- The centroid is chosen, as in FAISS, by ‖c‖² − 2 x·c in float32 (the kernel in `assign.c`), which can
+  pick a different centroid than exact arithmetic for near-ties; the distance to the chosen centroid,
+  and so the objective, is then recomputed exactly in double.
 - An input with NaN or infinity is rejected; the reference does not check.
 - `max_points_per_centroid` (training on a subsample) is not implemented; sample in SQL instead.
-- Spherical mode is not implemented yet (phase 5).
+## Spherical (`emeans_spherical`)
 
-## Spherical (planned)
-
-Assign with ĉ_j = c_j / ‖c_j‖ (zero stays zero) and argmax of the dot product; objective
-Σ(2 − 2·sim); the closing mean is normalised.
+The initial centroids are normalised. Each row is assigned to the largest x·ĉ_j, where ĉ_j = c_j / ‖c_j‖
+(zero stays zero; the norm is taken after scaling by the largest magnitude, so it cannot overflow), and
+the objective is Σ(2 − 2 x·ĉ). The EMA updates and the splits move the raw centroids c_j, as in the
+Euclidean variant. The closing means are normalised, and so are centroids the closing pass never
+reached. Like the reference, the rows are not normalised; for unit rows 2 − 2 x·ĉ is ‖x − ĉ‖².

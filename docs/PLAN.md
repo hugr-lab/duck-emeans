@@ -61,12 +61,22 @@ argument once in bind and caches the norms, so the hot path is a plain n × k ×
 4. Validation (done): the recipe matches faiss-cpu 1.16.0 for 220 shapes; the final objective is within
    1% of `NumpyEmeans` on Gaussian mixtures (n = 100k, d = 16 and 128, k = 256); `emeans_assign` agrees
    with `faiss.knn`; benchmark in docs/BENCHMARK.md (2.5× slower than FAISS at d = 16, 13× at d = 128).
-5. `FLOAT[d]` output, spherical, threaded assignment, the budget setting.
+5. Done: the blocked kernel, spherical, `emeans_assign` reusing prepared centroids within a chunk, the
+   budget setting (phase 3). Not done: `FLOAT[d]` output, because the stable C API cannot set a return
+   type at bind (cast in SQL instead); folding constant centroids at bind, because asking for a bind
+   argument fails for scalar subqueries; and threads inside one call, see below.
 6. Submission to `duckdb/community-extensions`, 2.0 only, like `cpt`.
 
 Later, if wanted: an aggregate `emeans_agg(vector, k)` (buffers rows in the state, runs the algorithm
 in finalize; the EMA is order-dependent, so combine concatenates), a DuckDB-WASM 2.0 build for a
 browser demo, and an "IVF-Flat in SQL" example where `emeans_assign` gives the partition key.
+
+## Threads inside one call (open)
+
+DuckDB runs one `emeans()` call on one thread; many calls (`GROUP BY`) already run in parallel. Splitting
+a call's assignment across threads would close most of the remaining 2.5× at d = 128, but needs pthreads
+on POSIX, Win32 threads for the MSVC build and a single-threaded path for WASM, and it oversubscribes the
+cores when DuckDB is already running other calls. It needs a decision before it is built.
 
 ## Risks
 

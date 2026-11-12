@@ -466,6 +466,103 @@ static void test_fit_out_of_memory(void) {
 	CHECK(fail_at == 2, "one allocation per call, succeeded at %ld", fail_at);
 }
 
+//===--------------------------------------------------------------------===//
+// The blocked kernel, normalisation, the spherical variant
+//===--------------------------------------------------------------------===//
+
+// k = 300 crosses the 256-centroid block; 61 rows leave a partial 8-row block.
+static void test_kernel_matches_exact(void) {
+	enum { N = 61, D = 7, K = 300 };
+	static float x[N * D], c[K * D], ct[D * K], bias[K], scratch[EMEANS_KERNEL_SCRATCH];
+	int64_t rows[N];
+	for (int i = 0; i < N * D; i++) {
+		x[i] = (float)sin(i * 0.37) * 3.0f;
+	}
+	for (int i = 0; i < K * D; i++) {
+		c[i] = (float)cos(i * 0.91) * 3.0f;
+	}
+	emeans_kernel kn = {ct, bias, K, D, 0};
+	for (int j = 0; j < K; j++) {
+		emeans_kernel_set(&kn, j, c + j * D);
+	}
+	for (int i = 0; i < N; i++) {
+		rows[i] = N - 1 - i; // out of order, as a permutation would be
+	}
+	int32_t fast[N], exact[N];
+	double dist[N];
+	emeans_kernel_nearest(&kn, x, rows, N, fast, scratch);
+	emeans_assign(x, D, rows, N, c, K, exact, dist);
+	int differ = 0;
+	for (int i = 0; i < N; i++) {
+		// A disagreement is allowed only for a float32 near-tie.
+		double gap = emeans_sq_dist(x + rows[i] * D, c + fast[i] * D, D) - dist[i];
+		differ += fast[i] != exact[i] && gap > 1e-4 * dist[i];
+	}
+	CHECK(differ == 0, "%d rows assigned differently from the exact loop", differ);
+	// The last centroid wins for a row equal to it: bias 1, dots 1 and 0 against a = (1, 0) and (0, 1).
+	float two_c[] = {0, 1, 1, 0}, two_ct[4], two_bias[2], row[] = {1, 0};
+	emeans_kernel two = {two_ct, two_bias, 2, 2, 0};
+	emeans_kernel_set(&two, 0, two_c);
+	emeans_kernel_set(&two, 1, two_c + 2);
+	int64_t first = 0;
+	int32_t label;
+	emeans_kernel_nearest(&two, row, &first, 1, &label, scratch);
+	CHECK(label == 1 && two_bias[0] == 1.0f, "label %d", label);
+	// Inner product: bias 0, (1, 0) prefers (1, 0) to (0, 1).
+	two.inner_product = 1;
+	emeans_kernel_set(&two, 0, two_c);
+	emeans_kernel_set(&two, 1, two_c + 2);
+	emeans_kernel_nearest(&two, row, &first, 1, &label, scratch);
+	CHECK(label == 1 && two_bias[0] == 0.0f && two_bias[1] == 0.0f, "inner product label %d", label);
+}
+
+static void test_normalize(void) {
+	// (3, 4) has norm 5; (1e30, 1e30) would overflow a float norm, but scales first: each becomes 1/sqrt(2).
+	float v[] = {3, 4}, big[] = {1e30f, -1e30f}, zero[] = {0, 0}, out[2];
+	emeans_normalize(v, out, 2);
+	CHECK_NEAR(out[0], 0.6, 1e-7);
+	CHECK_NEAR(out[1], 0.8, 1e-7);
+	emeans_normalize(big, big, 2);
+	CHECK_NEAR(big[0], 1 / sqrt(2.0), 1e-7);
+	CHECK_NEAR(big[1], -1 / sqrt(2.0), 1e-7);
+	emeans_normalize(zero, out, 2);
+	CHECK(out[0] == 0 && out[1] == 0, "zero stays zero");
+	// (1, 2, 2) . (2, 0, 1) = 4.
+	const float a[] = {1, 2, 2}, b[] = {2, 0, 1};
+	CHECK(emeans_dot(a, b, 3) == 4.0, "dot");
+}
+
+// Unit vectors near three directions in 3-D: e1, e2 and e3, tilted by small angles. Row i belongs to
+// direction i % 3.
+static void make_directions(float *x, int64_t n) {
+	for (int64_t i = 0; i < n; i++) {
+		float v[3] = {0.1f * (float)sin(i * 1.7), 0.1f * (float)cos(i * 2.3), 0.1f * (float)sin(i * 0.9)};
+		v[i % 3] += 1.0f;
+		emeans_normalize(v, x + i * 3, 3);
+	}
+}
+
+static void test_fit_spherical(void) {
+	enum { N = 150, D = 3, K = 3 };
+	float x[N * D];
+	make_directions(x, N);
+	emeans_params p;
+	emeans_default_params(&p);
+	p.spherical = 1;
+	p.nepochs = 3;
+	fit_result r;
+	CHECK(fit(x, N, D, K, &p, &r) == EMEANS_OK, "%s", r.err);
+	CHECK(pure_blobs(r.labels, N), "each direction is one cluster");
+	for (int j = 0; j < K; j++) {
+		CHECK_NEAR(emeans_dot(r.centroids + j * D, r.centroids + j * D, D), 1.0, 1e-6);
+	}
+	// The objective is the sum of 2 - 2 x.c: between 0 and 4 per row, small for tight directions.
+	CHECK(r.obj[2] >= 0 && r.obj[2] < 0.1 * N, "obj %g", r.obj[2]);
+	// Each centroid is the normalised mean of its rows: the mean's direction, so x.c is largest for its own.
+	double own = emeans_dot(x, r.centroids + r.labels[0] * D, D);
+	CHECK(own > 0.95, "row 0 to its centroid: %g", own);
+}
+
 int main(void) {
 	test_round_pow2();
 	test_passes();
@@ -484,6 +581,9 @@ int main(void) {
 	test_fit_revival();
 	test_fit_errors();
 	test_fit_out_of_memory();
+	test_kernel_matches_exact();
+	test_normalize();
+	test_fit_spherical();
 	if (failures) {
 		fprintf(stderr, "%d checks failed\n", failures);
 		return 1;
