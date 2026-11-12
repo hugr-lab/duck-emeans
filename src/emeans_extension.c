@@ -28,7 +28,6 @@ static bool (*const REGISTRATIONS[])(duckdb_connection, emeans_mem *) = {
     emeans_register_cluster,
     emeans_register_assign,
     emeans_register_trace,
-    emeans_register_agg,
 };
 
 bool emeans_register_all(duckdb_connection connection, emeans_mem *mem) {

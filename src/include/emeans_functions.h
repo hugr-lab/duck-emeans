@@ -28,11 +28,12 @@ typedef struct {
 	void *query; // emeans_query.h, for interrupts
 } emeans_settings;
 void emeans_bind_settings(duckdb_bind_info info);
+// The same from a client context, for binds on the C++ side.
+void emeans_settings_read(duckdb_client_context context, emeans_settings *s);
 bool emeans_register_recipe(duckdb_connection connection, emeans_mem *mem);
 bool emeans_register_cluster(duckdb_connection connection, emeans_mem *mem);
 bool emeans_register_assign(duckdb_connection connection, emeans_mem *mem);
 bool emeans_register_trace(duckdb_connection connection, emeans_mem *mem);
-bool emeans_register_agg(duckdb_connection connection, emeans_mem *mem);
 
 // emeans_assign_point(GEOMETRY, DOUBLE[][]): the scalar callback, registered with emeans_assign.
 void emeans_assign_geometry(duckdb_function_info info, duckdb_data_chunk input, duckdb_vector output);

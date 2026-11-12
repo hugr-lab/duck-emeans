@@ -118,7 +118,7 @@ Stages, each with every SQL test passing:
    PostGIS (docs/POSTGIS.md). It is a DuckDB `WindowFunction` (`src/cpp/emeans_window.cpp`), like
    `ntile`: it asks for the partition bounds, puts its arguments in the window's collection, and fits
    each partition once, on the first row evaluated, behind a lock that the threads of a hash group
-   share. The fit and the labels are emeans_agg's C code (`emeans_points.h`), so the id equals
+   share. The fit and the labels are emeans_agg's C code (`emeans_agg.h`), so the id equals
    `emeans_assign_point(geom, (emeans_agg(geom, k) OVER w).centroids)`, which the tests check row by row.
    An aggregate with only window callbacks (`window_init` and the batched `window` callback, as
    quantile uses) was tried first and does not work for `OVER (PARTITION BY ...)`: DuckDB's window
@@ -129,12 +129,16 @@ Stages, each with every SQL test passing:
       the SQL functions pass the query's `ClientContext::IsInterrupted` (`emeans_query.h`), taken at
       bind. `emeans()`, `emeans_spherical()`, `emeans_trace()` and `emeans_cluster_id()` stop within a
       step of Ctrl-C or `con.interrupt()`, so `emeans_max_work` now defaults to 0 (no cap). A C API
-      aggregate has no query, so `emeans_agg` keeps its fixed limit until step 3.
+      aggregate has no query, so `emeans_agg` kept a fixed limit until step 3.
    2. Remove the C API build (done): `Makefile.capi`, `duckdb_capi/`, `src/functions/emeans_capi.c`
       and the `duckdb_extension.h` shim are gone; the C glue includes `duckdb.h` directly, and
       CMakeLists.txt builds only inside DuckDB's build.
-   3. `emeans_agg` as a C++ aggregate with a bind: the CRS read from the argument type at bind instead of
-      the ANY parameter, the settings and the query for interrupts and threads.
+   3. `emeans_agg` as a C++ aggregate with a bind (done, `src/cpp/emeans_agg.cpp`): the callbacks pass
+      DuckDB's vectors to the C state code as the C API's types, as DuckDB's own C API adapter does. The
+      bind checks the points' type (a wrong one fails at bind, a fixed-size array is cast to a list) and
+      takes `emeans_max_work`, `emeans_threads` and the query, so `emeans_agg` is limited, threaded and
+      interruptible like `emeans()`. The parameter stays ANY: a GEOMETRY parameter would drop the CRS in
+      the implicit cast, and the bind is what now rejects the types ANY lets through.
    4. DuckDB's task scheduler in place of the pthreads shim (`src/core/parallel.c` keeps a hook).
    5. `FLOAT[d][]` centroids when the input is a fixed-size array, the type known at bind.
 

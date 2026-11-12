@@ -81,7 +81,13 @@ static int thread_count(duckdb_client_context context) {
 	return threads < 1 ? 1 : (threads > 64 ? 64 : (int)threads);
 }
 
-// Bind: capture emeans_max_work and the thread count for this query.
+void emeans_settings_read(duckdb_client_context context, emeans_settings *s) {
+	s->max_work = setting_double(context, MAX_WORK_SETTING, MAX_WORK_DEFAULT);
+	s->threads = thread_count(context);
+	s->query = emeans_query_context(context);
+}
+
+// Bind: capture emeans_max_work, the thread count and the query.
 void emeans_bind_settings(duckdb_bind_info info) {
 	emeans_settings *data = (emeans_settings *)malloc(sizeof(emeans_settings));
 	if (!data) {
@@ -90,9 +96,7 @@ void emeans_bind_settings(duckdb_bind_info info) {
 	}
 	duckdb_client_context context = NULL;
 	duckdb_scalar_function_get_client_context(info, &context);
-	data->max_work = setting_double(context, MAX_WORK_SETTING, MAX_WORK_DEFAULT);
-	data->threads = thread_count(context);
-	data->query = emeans_query_context(context);
+	emeans_settings_read(context, data);
 	duckdb_destroy_client_context(&context);
 	duckdb_scalar_function_set_bind_data(info, data, free);
 	duckdb_scalar_function_set_bind_data_copy(info, copy_settings);

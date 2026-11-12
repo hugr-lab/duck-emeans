@@ -56,7 +56,7 @@ Use `rtk` as a command prefix in this environment (see the user's global instruc
 - `src/cpp/`: the C++ side. `emeans_extension.cpp` is the entry point; `emeans_mem.cpp` backs
   `emeans_mem.h` with the buffer manager (every row-sized buffer in `src/functions` comes from there);
   `emeans_window.cpp` is `emeans_cluster_id`, a DuckDB `WindowFunction` that fits each partition with
-  `emeans_agg`'s C code through `emeans_points.h`. It must stay a `WindowFunction`: a window-only
+  `emeans_agg`'s C code through `emeans_agg.h`. It must stay a `WindowFunction`: a window-only
   aggregate is rewritten into a GROUP BY by the window self-join optimizer and fails.
 - `docs/PLAN.md`: the phased plan; `docs/ALGORITHM.md`: the formulas.
 - `web/playground/`: the playground, Scala.js + Laminar built with Mill (`make -C web/playground test`,
@@ -80,7 +80,7 @@ Use `rtk` as a command prefix in this environment (see the user's global instruc
 - No mutable global or static state in src/: calls run concurrently on DuckDB's threads.
 - Long fits must stay interruptible: `emeans_fit` asks `params.interrupted` once per step and per
   k-means++ centroid. The SQL functions pass `emeans_query_interrupted` with the query captured at bind
-  (`emeans_query.h`); a new loop over the rows needs a check too. `emeans_agg` has no query (C API
-  aggregate) and keeps a fixed work limit; `emeans_max_work` (default 0, none) caps the rest up front.
+  (`emeans_query.h`); a new loop over the rows needs a check too. `emeans_max_work` (default 0, none)
+  caps the work up front.
 - Expected values in tests must be derived from the model, not copied from output. Carry the arithmetic
   in a comment.
