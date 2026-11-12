@@ -65,10 +65,25 @@ SELECT id, city,
 FROM places;
 ```
 
-Labels start at 1, so `centroids[cluster]` is the row's centroid. The C API has no custom window
-functions, so the per-row label is this second call: each point's nearest final centroid. Other
-differences from PostGIS: there is no `max_radius`, and the result of a group does not depend on the
-order of its rows (the points are sorted before clustering).
+Labels start at 1, so `centroids[cluster]` is the row's centroid. Other differences from PostGIS: there
+is no `max_radius`, and the result of a group does not depend on the order of its rows (the points are
+sorted before clustering).
+
+### Why the cluster id takes a second call
+
+`emeans_agg` is an ordinary aggregate, and DuckDB runs any aggregate as a window function: with
+`OVER (PARTITION BY city)` it computes `emeans_agg` once per partition (the frame is the whole
+partition) and gives the result, the partition's centroids, to every row of it. What an aggregate cannot
+do is give each row a different value. It is computed from the rows of the frame and never learns which
+row it is being computed for, so every row of a partition gets the same centroids, not its own cluster
+id. Passing the row's geometry as another argument does not help: aggregate arguments are evaluated
+for every row of the frame, not for the current row.
+
+PostGIS's `ST_ClusterKMeans` is a window function proper, which sees the current row and returns its id.
+DuckDB extensions written against the stable C API can define scalar, aggregate and table functions,
+but not window functions. So the id is the second, scalar call, `emeans_assign_point(geom, centroids)`:
+the row's nearest final centroid. After the closing pass every centroid is the mean of the points
+assigned to it, so this is the cluster a converged k-means gives the row.
 
 The coordinate system decides the geometry. For a geographic CRS (`OGC:CRS84`, `EPSG:4326`, `EPSG:4258`,
 `EPSG:4269` and a few others; x is longitude) the points are clustered on the sphere, so clusters across
