@@ -6,13 +6,15 @@
 // Clusters the vectors in x (LIST(LIST(FLOAT)) or LIST(LIST(DOUBLE)), one list per row, typically built
 // with list(embedding ORDER BY id)) into k clusters. labels are 1-based, so centroids[labels[i]] is row
 // i's centroid; a row the passes never reached (nepochs < 1) has a NULL label. NULL x or k gives NULL;
-// NULL nepochs means 5, NULL seed 1234. The work is capped by SET emeans_max_work; a large batch is
-// assigned on up to emeans_threads threads (0, the default, means DuckDB's threads setting).
+// NULL nepochs means 5, NULL seed 1234. A running call stops when the query is interrupted; SET
+// emeans_max_work caps the work up front (0, the default, means no cap). A large batch is assigned on up
+// to emeans_threads threads (0, the default, means DuckDB's threads setting).
 
 #include "duckdb_extension.h"
 
 #include "emeans.h"
 #include "emeans_functions.h"
+#include "emeans_query.h"
 #include "vec_io.h"
 
 #include <stdio.h>
@@ -22,7 +24,7 @@
 DUCKDB_EXTENSION_EXTERN
 
 #define MAX_WORK_SETTING "emeans_max_work"
-#define MAX_WORK_DEFAULT 1e11
+#define MAX_WORK_DEFAULT 0.0
 #define THREADS_SETTING "emeans_threads"
 #define N_FIELDS 6
 
@@ -51,7 +53,7 @@ bool emeans_register_settings(duckdb_connection connection, emeans_mem *mem) {
 	(void)mem;
 	return register_option(connection, MAX_WORK_SETTING, DUCKDB_TYPE_DOUBLE, duckdb_create_double(MAX_WORK_DEFAULT),
 	                       "Maximum work per emeans() call, in rows x k x d summed over all passes; 0 = no limit. "
-	                       "Bounds run time, since a running call cannot be interrupted.") &&
+	                       "A running call also stops when the query is interrupted.") &&
 	       register_option(connection, THREADS_SETTING, DUCKDB_TYPE_BIGINT, duckdb_create_int64(0),
 	                       "Threads one emeans() call may use to assign a large batch; 0 = the threads setting. "
 	                       "The result does not depend on it.");
@@ -92,6 +94,7 @@ void emeans_bind_settings(duckdb_bind_info info) {
 	duckdb_scalar_function_get_client_context(info, &context);
 	data->max_work = setting_double(context, MAX_WORK_SETTING, MAX_WORK_DEFAULT);
 	data->threads = thread_count(context);
+	data->query = emeans_query_context(context);
 	duckdb_destroy_client_context(&context);
 	duckdb_scalar_function_set_bind_data(info, data, free);
 	duckdb_scalar_function_set_bind_data_copy(info, copy_settings);
@@ -123,6 +126,8 @@ static int read_params(duckdb_data_chunk input, idx_t row, const cluster_mode *m
 	p->threads = mode->settings.threads;
 	p->spherical = mode->spherical;
 	p->allocator = emeans_mem_allocator(mode->mem);
+	p->interrupted = emeans_query_interrupted;
+	p->interrupt_ctx = mode->settings.query;
 	if (arg_present(input, 2, row)) {
 		p->nepochs = ((const double *)arg_data(input, 2))[row];
 	}
@@ -175,8 +180,7 @@ static int write_result(duckdb_vector output, idx_t row, const emeans_output *o,
 
 static void add_budget_hint(char *err) {
 	size_t len = strlen(err);
-	snprintf(err + len, EMEANS_ERR_LEN - len, ". A running call cannot be interrupted; raise the limit with SET "
-	                                          "emeans_max_work (0 = no limit)");
+	snprintf(err + len, EMEANS_ERR_LEN - len, "; raise the limit with SET emeans_max_work (0 = no limit)");
 }
 
 // The recipe first, for the number of passes the objective list needs (and its argument checks).

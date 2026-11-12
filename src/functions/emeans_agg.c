@@ -9,8 +9,8 @@
 // clustering, so the result does not depend on the order rows arrive in. Label rows with
 // emeans_assign_point(point, centroids) for geometries, emeans_assign(vector, centroids) for vectors.
 //
-// An aggregate gets no bind step in the C API, so emeans_agg cannot read settings: it runs on one thread
-// and stops above the default work limit (1e11 units of rows x k x d), as emeans() does by default.
+// An aggregate gets no bind step in the C API, so emeans_agg cannot read settings or see its query: it runs
+// on one thread, cannot be interrupted, and stops above a fixed work limit of 1e11 units of rows x k x d.
 
 #include "duckdb_extension.h"
 
@@ -18,6 +18,7 @@
 #include "emeans.h"
 #include "emeans_functions.h"
 #include "emeans_points.h"
+#include "emeans_query.h"
 #include "geo.h"
 #include "vec_io.h"
 
@@ -417,25 +418,28 @@ static void free_fit(fit_buffers *b) {
 	free(b->obj);
 }
 
-static void fit_params(const agg_state *s, emeans_mem *mem, emeans_params *p) {
+// query (emeans_query.h) is the query to stop with, or NULL: the C API gives an aggregate none.
+static void fit_params(const agg_state *s, emeans_mem *mem, void *query, emeans_params *p) {
 	emeans_default_params(p);
 	p->nepochs = s->nepochs;
 	p->seed = s->seed;
 	p->spherical = s->geographic;
-	p->max_work = MAX_WORK;
+	p->max_work = query ? 0 : MAX_WORK; // without a query to stop with, a fixed limit bounds the run time
 	// Unlike emeans() and the reference, k-means++ seeding: on 2-D maps, where the reference turns revival
 	// off, a random start left clusters up to 25% worse than PostGIS (docs/POSTGIS.md).
 	p->kmeans_plus_plus = 1;
 	p->allocator = emeans_mem_allocator(mem);
+	p->interrupted = emeans_query_interrupted;
+	p->interrupt_ctx = query;
 }
 
 // The fit of a state's points: in canonical form and sorted, so the result does not depend on the order
 // rows arrived in. The sort buffer goes back before the fit, which takes its own workspace. s is pinned;
 // on success b holds the centroids in b->c and out describes the run.
-static int fit_model(const agg_state *s, emeans_mem *mem, const layout *l, fit_buffers *b, emeans_output *out,
-                     char *err) {
+static int fit_model(const agg_state *s, emeans_mem *mem, void *query, const layout *l, fit_buffers *b,
+                     emeans_output *out, char *err) {
 	emeans_params p;
-	fit_params(s, mem, &p);
+	fit_params(s, mem, query, &p);
 	emeans_recipe recipe;
 	if (emeans_resolve_recipe(s->n, s->k, l->dim, p.nepochs, p.law, 0, 0, &recipe, err) ||
 	    alloc_fit(b, s, l->dim, recipe.n_passes, mem, err)) {
@@ -454,7 +458,7 @@ static int fit_state(const agg_state *s, emeans_mem *mem, duckdb_vector result, 
 	layout l = make_layout(s, s->geometry);
 	fit_buffers b = {NULL, NULL, NULL, NULL, NULL};
 	emeans_output out;
-	int rc = fit_model(s, mem, &l, &b, &out, err) || write_result(result, row, s, &l, &out, err);
+	int rc = fit_model(s, mem, NULL, &l, &b, &out, err) || write_result(result, row, s, &l, &out, err);
 	free_fit(&b);
 	return rc;
 }
@@ -602,7 +606,7 @@ int64_t emeans_points_count(const void *state) {
 	return ((const agg_state *)state)->n;
 }
 
-int emeans_points_label(void *state, emeans_mem *mem, int32_t *labels, char *err) {
+int emeans_points_label(void *state, emeans_mem *mem, void *query, int32_t *labels, char *err) {
 	agg_state *s = state;
 	agg_state *pinned[1];
 	pin_list pins = {mem, pinned, 0};
@@ -612,7 +616,7 @@ int emeans_points_label(void *state, emeans_mem *mem, int32_t *labels, char *err
 	layout l = make_layout(s, s->geometry); // reads the points, so after the pin
 	fit_buffers b = {NULL, NULL, NULL, NULL, NULL};
 	emeans_output out;
-	int rc = fit_model(s, mem, &l, &b, &out, err) || label_state(s, &l, b.c, labels, err);
+	int rc = fit_model(s, mem, query, &l, &b, &out, err) || label_state(s, &l, b.c, labels, err);
 	free_fit(&b);
 	unpin_all(&pins);
 	return rc;

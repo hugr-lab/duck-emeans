@@ -25,5 +25,6 @@ int emeans_points_add(void *state, duckdb_data_chunk input, idx_t first, idx_t e
 int64_t emeans_points_count(const void *state);
 
 // Fits the points and writes each one's 1-based label, in the order they were added, to labels
-// (emeans_points_count entries). Returns 0, or 1 with a message in err.
-int emeans_points_label(void *state, emeans_mem *mem, int32_t *labels, char *err);
+// (emeans_points_count entries); the fit stops if query (emeans_query.h, may be NULL) is interrupted.
+// Returns 0, or 1 with a message in err.
+int emeans_points_label(void *state, emeans_mem *mem, void *query, int32_t *labels, char *err);

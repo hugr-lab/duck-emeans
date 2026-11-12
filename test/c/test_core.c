@@ -831,6 +831,44 @@ static void test_fit_allocator(void) {
 	CHECK(a.releases == 1, "nothing released after a failed allocation");
 }
 
+// The caller's interrupted() stops a fit: asked during k-means++ and once per step, never again after it
+// says yes, and the fit returns EMEANS_INTERRUPTED with the workspace released.
+typedef struct {
+	int calls;
+	int stop_at; // say yes on this call
+} stop_counter;
+
+static int stop_after(void *ctx) {
+	stop_counter *c = ctx;
+	return ++c->calls >= c->stop_at;
+}
+
+static void test_fit_interrupted(void) {
+	enum { N = 300, D = 4, K = 3 };
+	float x[N * D];
+	make_blobs(x, N, D);
+	emeans_params p;
+	emeans_default_params(&p);
+	p.kmeans_plus_plus = 1;
+	counting_allocator a = {0, 0, 0};
+	p.allocator = (emeans_allocator) {counting_alloc, counting_release, &a};
+	fit_result r;
+	stop_counter never = {0, 1 << 30};
+	p.interrupted = stop_after;
+	p.interrupt_ctx = &never;
+	CHECK(fit(x, N, D, K, &p, &r) == EMEANS_OK, "%s", r.err);
+	// k - 1 = 2 asks in k-means++, then one per pass and one per step.
+	CHECK(never.calls > K - 1, "asked %d times", never.calls);
+	for (int stop_at = 1; stop_at <= never.calls; stop_at += never.calls / 4 + 1) {
+		stop_counter c = {0, stop_at};
+		p.interrupt_ctx = &c;
+		CHECK(fit(x, N, D, K, &p, &r) == EMEANS_INTERRUPTED && strcmp(r.err, "interrupted") == 0,
+		      "stop at call %d: %s", stop_at, r.err);
+		CHECK(c.calls == stop_at, "not asked again after yes: %d calls", c.calls);
+	}
+	CHECK(a.allocs == a.releases, "%d allocations, %d releases", a.allocs, a.releases);
+}
+
 int main(void) {
 	test_round_pow2();
 	test_passes();
@@ -850,6 +888,7 @@ int main(void) {
 	test_fit_errors();
 	test_fit_out_of_memory();
 	test_fit_allocator();
+	test_fit_interrupted();
 	test_kernel_matches_exact();
 	test_parallel_for();
 	test_fit_threads_same_result();

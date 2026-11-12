@@ -124,8 +124,18 @@ Stages, each with every SQL test passing:
    quantile uses) was tried first and does not work for `OVER (PARTITION BY ...)`: DuckDB's window
    self-join optimizer turns a partition-only window aggregate into a `GROUP BY` and a join without
    checking that the function can aggregate, and the plan fails with "missing a combine method".
-4. Native C++ for the remaining functions, removing the ANY parameter, the thread shim and the C API
-   build; `FLOAT[d]` output; interrupts.
+4. Native C++ for the rest, in steps, each its own pull request:
+   1. Interrupts (done): `emeans_params.interrupted`, asked once per step and per k-means++ centroid;
+      the SQL functions pass the query's `ClientContext::IsInterrupted` (`emeans_query.h`), taken at
+      bind. `emeans()`, `emeans_spherical()`, `emeans_trace()` and `emeans_cluster_id()` stop within a
+      step of Ctrl-C or `con.interrupt()`, so `emeans_max_work` now defaults to 0 (no cap). A C API
+      aggregate has no query, so `emeans_agg` keeps its fixed limit until step 3.
+   2. Remove the C API build: `Makefile.capi`, `duckdb_capi/`, `src/functions/emeans_capi.c` and the
+      `duckdb_extension.h` shim; the C glue includes `duckdb.h` directly.
+   3. `emeans_agg` as a C++ aggregate with a bind: the CRS read from the argument type at bind instead of
+      the ANY parameter, the settings and the query for interrupts and threads.
+   4. DuckDB's task scheduler in place of the pthreads shim (`src/core/parallel.c` keeps a hook).
+   5. `FLOAT[d][]` centroids when the input is a fixed-size array, the type known at bind.
 
 Later, if wanted: an "IVF-Flat in SQL" example where `emeans_assign` gives the partition key (see
 docs/QDRANT.md for how such an index compares).

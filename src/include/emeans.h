@@ -17,6 +17,7 @@
 #define EMEANS_INVALID 1
 #define EMEANS_OOM 2
 #define EMEANS_BUDGET_EXCEEDED 3
+#define EMEANS_INTERRUPTED 4
 
 // A snapshot of the centroids during a run, for tracing (emeans_trace in SQL). centroids is k x d and valid
 // only during the callback.
@@ -57,6 +58,8 @@ typedef struct {
 	void *frame_ctx;
 	int64_t frame_every;     // 0 (default): only the first and the final frame
 	emeans_allocator allocator; // the workspace's; zeroed (default) for calloc
+	int (*interrupted)(void *ctx); // asked once per step and per k-means++ centroid; non-zero stops the
+	void *interrupt_ctx;           // fit with EMEANS_INTERRUPTED. NULL (default): never
 } emeans_params;
 
 void emeans_default_params(emeans_params *p);

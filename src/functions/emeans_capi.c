@@ -1,9 +1,10 @@
-// emeans_mem.h for the C API build, which has no buffer manager: malloc, and pinning does nothing. The
-// C++ build has src/cpp/emeans_mem.cpp instead.
+// The C API build's stand-ins for src/cpp (until stage 4 of docs/PLAN.md removes that build):
+// emeans_mem.h on malloc, where pinning does nothing, and emeans_query.h with no query to interrupt.
 
 #ifndef EMEANS_CPP_BUILD
 
 #include "emeans_mem.h"
+#include "emeans_query.h"
 
 #include "recipe.h"
 
@@ -46,6 +47,16 @@ void emeans_block_free(emeans_block *b) {
 emeans_allocator emeans_mem_allocator(emeans_mem *mem) {
 	(void)mem;
 	return (emeans_allocator) {NULL, NULL, NULL};
+}
+
+void *emeans_query_context(duckdb_client_context context) {
+	(void)context;
+	return NULL;
+}
+
+int emeans_query_interrupted(void *query) {
+	(void)query;
+	return 0;
 }
 
 #endif

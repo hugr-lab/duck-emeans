@@ -5,7 +5,7 @@
 // In the C++ build (src/cpp/emeans_mem.cpp) a block comes from the database's buffer manager: it counts
 // against memory_limit, an allocation past the limit fails with DuckDB's out-of-memory message instead of
 // taking the process down, and a block that is not pinned may be written to temp_directory when memory
-// runs short and read back on the next pin. In the C API build (src/functions/emeans_mem_capi.c) a block
+// runs short and read back on the next pin. In the C API build (src/functions/emeans_capi.c) a block
 // is malloc'd and pinning does nothing.
 //
 // A block is pinned when allocated. Its data pointer is valid only while it is pinned; a pin may move it.

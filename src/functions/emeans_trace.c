@@ -17,6 +17,7 @@
 #include "assign.h"
 #include "emeans.h"
 #include "emeans_functions.h"
+#include "emeans_query.h"
 #include "vec_io.h"
 
 #include <math.h>
@@ -92,6 +93,8 @@ static int read_args(duckdb_data_chunk input, idx_t row, const emeans_settings *
 	emeans_default_params(&a->p);
 	a->p.max_work = settings->max_work;
 	a->p.threads = settings->threads;
+	a->p.interrupted = emeans_query_interrupted;
+	a->p.interrupt_ctx = settings->query;
 	a->k = ((const int64_t *)arg_data(input, 2))[row];
 	a->p.nepochs = arg_double(input, 3, row, 5.0);
 	a->lloyd = arg_method(input, row);
