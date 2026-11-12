@@ -5,7 +5,7 @@
 // the two-call form would give it, emeans_assign_point(point, centroids) for geometries and
 // emeans_assign(vector, centroids) for vectors.
 
-#include "duckdb_extension.h"
+#include "duckdb.h"
 #include "emeans_mem.h"
 
 #include <stdbool.h>

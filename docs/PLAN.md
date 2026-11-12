@@ -108,7 +108,7 @@ Stages, each with every SQL test passing:
    the C++ `Load` hands the C registrations a `Connection` on the loader's database. The C sources
    include a shim `duckdb_extension.h`, so their calls bind to the C API inside DuckDB. The CRAP gate
    takes its SQL coverage from a DuckDB build with only the extension instrumented, so it scores the
-   C++ as well as the C. The C API build stays available (`make -f Makefile.capi`) until stage 4.
+   C++ as well as the C. The C API build stayed available (`make -f Makefile.capi`) until step 4.2.
 2. Spilling memory (done): the input copy, the fit's workspace and the aggregate's points in
    `BufferManager` blocks (`src/include/emeans_mem.h`, `src/cpp/emeans_mem.cpp`). An aggregate state's
    block is pinned only inside a callback, so between callbacks it can go to `temp_directory`.
@@ -130,8 +130,9 @@ Stages, each with every SQL test passing:
       bind. `emeans()`, `emeans_spherical()`, `emeans_trace()` and `emeans_cluster_id()` stop within a
       step of Ctrl-C or `con.interrupt()`, so `emeans_max_work` now defaults to 0 (no cap). A C API
       aggregate has no query, so `emeans_agg` keeps its fixed limit until step 3.
-   2. Remove the C API build: `Makefile.capi`, `duckdb_capi/`, `src/functions/emeans_capi.c` and the
-      `duckdb_extension.h` shim; the C glue includes `duckdb.h` directly.
+   2. Remove the C API build (done): `Makefile.capi`, `duckdb_capi/`, `src/functions/emeans_capi.c`
+      and the `duckdb_extension.h` shim are gone; the C glue includes `duckdb.h` directly, and
+      CMakeLists.txt builds only inside DuckDB's build.
    3. `emeans_agg` as a C++ aggregate with a bind: the CRS read from the argument type at bind instead of
       the ANY parameter, the settings and the query for interrupts and threads.
    4. DuckDB's task scheduler in place of the pthreads shim (`src/core/parallel.c` keeps a hook).

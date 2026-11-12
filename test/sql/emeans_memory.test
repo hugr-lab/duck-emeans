@@ -2,8 +2,6 @@
 # description: emeans_agg's points are buffer-manager memory: counted against memory_limit, and written to the temp directory when they do not fit
 # group: [emeans]
 
-# The C++ build only: the C API build (Makefile.capi) allocates with malloc, which memory_limit does not see.
-
 require emeans
 
 # 100 groups of 30,000 2-D points: 3M points, 48 MB as stored (two doubles each), above the 30 MB limit

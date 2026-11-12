@@ -1,7 +1,6 @@
 PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
 # The C++ extension, built inside DuckDB v2.0.0 (the duckdb submodule) as the extension template does.
-# Makefile.capi is the stable C API build it replaces, kept until stage 4 of docs/PLAN.md.
 EXT_NAME=emeans
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 
@@ -82,4 +81,3 @@ help:
 	@echo "make crap             - CRAP score per C/C++ function (lizard + llvm-cov); fails at CRAP >= 10"
 	@echo "make compare_faiss    - recipe, objective and assignment against faiss-cpu's NumpyEmeans (manual)"
 	@echo "make bench            - emeans() against NumpyEmeans and Lloyd, timings (manual)"
-	@echo "make -f Makefile.capi - the stable C API build (until stage 4 of docs/PLAN.md)"

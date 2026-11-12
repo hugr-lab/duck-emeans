@@ -2,7 +2,7 @@
 
 // SQL surface: registration of every function set, and the helpers they share.
 
-#include "duckdb_extension.h"
+#include "duckdb.h"
 #include "emeans_mem.h"
 
 #include <stdbool.h>
@@ -15,7 +15,7 @@ bool emeans_add_overload(duckdb_scalar_function_set set, const char *name, duckd
                          duckdb_scalar_function_bind_t bind, void *extra_info);
 
 // Every function and setting of the extension; false if one failed to register. mem is the database's
-// buffer manager in the C++ build and NULL in the C API build (emeans_mem.h).
+// buffer manager (emeans_mem.h).
 bool emeans_register_all(duckdb_connection connection, emeans_mem *mem);
 
 bool emeans_register_settings(duckdb_connection connection, emeans_mem *mem);

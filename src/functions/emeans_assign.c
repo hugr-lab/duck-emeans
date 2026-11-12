@@ -11,7 +11,7 @@
 // list entry, so it is prepared once per chunk of up to 2048 rows. (Folding a constant at bind would
 // save that too, but asking for a bind argument fails for scalar subqueries.)
 
-#include "duckdb_extension.h"
+#include "duckdb.h"
 
 #include "assign.h"
 #include "emeans_functions.h"
@@ -21,8 +21,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-DUCKDB_EXTENSION_EXTERN
 
 #define N_FIELDS 2
 

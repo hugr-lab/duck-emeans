@@ -10,7 +10,7 @@
 // emeans_max_work caps the work up front (0, the default, means no cap). A large batch is assigned on up
 // to emeans_threads threads (0, the default, means DuckDB's threads setting).
 
-#include "duckdb_extension.h"
+#include "duckdb.h"
 
 #include "emeans.h"
 #include "emeans_functions.h"
@@ -20,8 +20,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-DUCKDB_EXTENSION_EXTERN
 
 #define MAX_WORK_SETTING "emeans_max_work"
 #define MAX_WORK_DEFAULT 0.0

@@ -12,7 +12,7 @@
 // An aggregate gets no bind step in the C API, so emeans_agg cannot read settings or see its query: it runs
 // on one thread, cannot be interrupted, and stops above a fixed work limit of 1e11 units of rows x k x d.
 
-#include "duckdb_extension.h"
+#include "duckdb.h"
 
 #include "assign.h"
 #include "emeans.h"
@@ -26,8 +26,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-DUCKDB_EXTENSION_EXTERN
 
 #define N_FIELDS 7
 #define MAX_WORK 1e11
