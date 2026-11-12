@@ -84,7 +84,9 @@ if(COMMAND build_loadable_extension AND NOT EMEANS_CAPI)
     build_static_extension(${EXTENSION_NAME} ${EMEANS_CPP_SOURCES})
     build_loadable_extension(${EXTENSION_NAME} " " ${EMEANS_CPP_SOURCES})
     foreach(_target ${EXTENSION_NAME}_extension ${EXTENSION_NAME}_loadable_extension)
-        target_compile_definitions(${_target} PRIVATE EMEANS_CPP_BUILD)
+        # DUCKDB_C_API empty: duckdb.h would declare the C API dllimport on Windows, but this extension links
+        # DuckDB statically, and mingw's linker (unlike MSVC's) refuses __imp_ references to static symbols.
+        target_compile_definitions(${_target} PRIVATE EMEANS_CPP_BUILD "DUCKDB_C_API=")
         # BEFORE: DuckDB's own src/include has a duckdb_extension.h, which must not win over the shim.
         target_include_directories(${_target} BEFORE PRIVATE src/include/cpp_shim src/include)
         set_property(TARGET ${_target} PROPERTY C_STANDARD 11)
