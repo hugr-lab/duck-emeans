@@ -17,6 +17,17 @@
 #define EMEANS_OOM 2
 #define EMEANS_BUDGET_EXCEEDED 3
 
+// A snapshot of the centroids during a run, for tracing (emeans_trace in SQL). centroids is k x d and valid
+// only during the callback.
+typedef struct {
+	double epoch;           // rows processed so far / n
+	int64_t step;           // updates so far
+	const float *centroids; // the moving centroids, or the closing means when final is set
+	int final;
+} emeans_frame;
+
+typedef void (*emeans_frame_fn)(void *ctx, const emeans_frame *frame);
+
 typedef struct {
 	double nepochs;          // passes over the data, fractional allowed (default 5)
 	uint32_t seed;           // initial centroids, pass permutations and donor sampling (default 1234)
@@ -29,6 +40,11 @@ typedef struct {
 	int spherical;           // assign by the largest inner product with the centroid directions (default 0)
 	int threads;             // threads for the assignment of a large batch (default 1); the result does not
 	                         // depend on it
+	int constant_step;       // alpha0 at every step instead of the cosine schedule (default 0). With
+	                         // batch_size = n, alpha0 = 1 and unused_threshold = 0 the run is Lloyd's k-means.
+	emeans_frame_fn on_frame; // called before the first step, every frame_every steps, and after closing
+	void *frame_ctx;
+	int64_t frame_every;     // 0 (default): only the first and the final frame
 } emeans_params;
 
 void emeans_default_params(emeans_params *p);

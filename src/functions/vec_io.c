@@ -150,8 +150,7 @@ int emeans_read_vector(duckdb_vector vec, idx_t row, emeans_buffer *buf, int64_t
 // Writing
 //===--------------------------------------------------------------------===//
 
-// Makes room for count more elements in the list vector's child and points row at them.
-static int append(duckdb_vector out, idx_t row, idx_t count, idx_t *start, char *err) {
+int emeans_list_append(duckdb_vector out, idx_t row, idx_t count, idx_t *start, char *err) {
 	*start = duckdb_list_vector_get_size(out);
 	if (duckdb_list_vector_reserve(out, *start + count) != DuckDBSuccess) {
 		return emeans_error(err, "out of memory");
@@ -169,12 +168,12 @@ static void *child_data(duckdb_vector out) {
 
 int emeans_write_matrix(duckdb_vector out, idx_t row, const float *m, int64_t rows, int64_t cols, char *err) {
 	idx_t first, start;
-	if (append(out, row, (idx_t)rows, &first, err)) {
+	if (emeans_list_append(out, row, (idx_t)rows, &first, err)) {
 		return 1;
 	}
 	duckdb_vector inner = duckdb_list_vector_get_child(out);
 	for (int64_t r = 0; r < rows; r++) {
-		if (append(inner, first + (idx_t)r, (idx_t)cols, &start, err)) {
+		if (emeans_list_append(inner, first + (idx_t)r, (idx_t)cols, &start, err)) {
 			return 1;
 		}
 		memcpy((float *)child_data(inner) + start, m + r * cols, (size_t)cols * sizeof(float));
@@ -185,7 +184,7 @@ int emeans_write_matrix(duckdb_vector out, idx_t row, const float *m, int64_t ro
 // Labels as 1-based cluster numbers, so centroids[label] works in SQL; -1 (not seen) becomes NULL.
 int emeans_write_labels(duckdb_vector out, idx_t row, const int32_t *labels, int64_t n, char *err) {
 	idx_t start;
-	if (append(out, row, (idx_t)n, &start, err)) {
+	if (emeans_list_append(out, row, (idx_t)n, &start, err)) {
 		return 1;
 	}
 	duckdb_vector child = duckdb_list_vector_get_child(out);
@@ -201,7 +200,7 @@ int emeans_write_labels(duckdb_vector out, idx_t row, const int32_t *labels, int
 
 int emeans_write_doubles(duckdb_vector out, idx_t row, const double *v, int64_t n, char *err) {
 	idx_t start;
-	if (append(out, row, (idx_t)n, &start, err)) {
+	if (emeans_list_append(out, row, (idx_t)n, &start, err)) {
 		return 1;
 	}
 	memcpy((double *)child_data(out) + start, v, (size_t)n * sizeof(double));

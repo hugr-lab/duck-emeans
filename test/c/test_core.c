@@ -619,6 +619,53 @@ static void test_fit_spherical(void) {
 	CHECK(own > 0.95, "row 0 to its centroid: %g", own);
 }
 
+//===--------------------------------------------------------------------===//
+// Lloyd mode and frames
+//===--------------------------------------------------------------------===//
+
+typedef struct {
+	int count;
+	double epochs[16];
+	int64_t steps[16];
+	float last[4];
+	int finals;
+} frame_log;
+
+static void log_frame(void *ctx, const emeans_frame *f) {
+	frame_log *log = ctx;
+	log->epochs[log->count] = f->epoch;
+	log->steps[log->count++] = f->step;
+	memcpy(log->last, f->centroids, sizeof(log->last));
+	log->finals += f->final;
+}
+
+static void test_fit_lloyd_mode_and_frames(void) {
+	// Lloyd from centroids 0 and 1 on 0 1 2 3 10 11 (x axis): (0, 5.4), then (1, 8), then 3 is 2 from 1 and 5
+	// from 8, so (0 + 1 + 2 + 3) / 4 = 1.5 and (10 + 11) / 2 = 10.5.
+	emeans_params p;
+	fit_result r;
+	frame_log log = {0};
+	line_params(&p, 3.0);
+	p.constant_step = 1;
+	p.unused_threshold = 0;
+	p.on_frame = log_frame;
+	p.frame_ctx = &log;
+	p.frame_every = 1;
+	CHECK(fit(LINE, 6, 2, 2, &p, &r) == EMEANS_OK, "%s", r.err);
+	CHECK_NEAR(r.centroids[0], 1.5, 1e-6);
+	CHECK_NEAR(r.centroids[2], 10.5, 1e-6);
+	// Frames: the start, one per step (one batch per pass), and the final: epochs 0, 1, 2, 3 and 3.
+	CHECK(log.count == 5 && log.finals == 1, "%d frames", log.count);
+	CHECK(log.epochs[0] == 0 && log.epochs[1] == 1 && log.epochs[3] == 3 && log.epochs[4] == 3, "epochs");
+	CHECK(log.steps[0] == 0 && log.steps[4] == 3, "steps");
+	CHECK(log.last[0] == r.centroids[0] && log.last[2] == r.centroids[2], "the final frame is the result");
+	// Without on_frame nothing is called; frame_every 0 still gives the first and the final frame.
+	frame_log quiet = {0};
+	p.frame_every = 0;
+	p.frame_ctx = &quiet;
+	CHECK(fit(LINE, 6, 2, 2, &p, &r) == EMEANS_OK && quiet.count == 2, "%d frames", quiet.count);
+}
+
 int main(void) {
 	test_round_pow2();
 	test_passes();
@@ -640,6 +687,7 @@ int main(void) {
 	test_kernel_matches_exact();
 	test_parallel_for();
 	test_fit_threads_same_result();
+	test_fit_lloyd_mode_and_frames();
 	test_normalize();
 	test_fit_spherical();
 	if (failures) {

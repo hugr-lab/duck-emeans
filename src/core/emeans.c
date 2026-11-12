@@ -49,6 +49,8 @@ typedef struct {
 	int spherical;
 	int threads;
 	int64_t scratch_floats; // per thread
+	const emeans_params *params;
+	int64_t rows_done;      // rows assigned so far, for the epoch of a frame
 	emeans_recipe recipe;
 	emeans_output *out;
 	workspace ws;
@@ -68,6 +70,10 @@ void emeans_default_params(emeans_params *p) {
 	p->max_work = 0;
 	p->spherical = 0;
 	p->threads = 1;
+	p->constant_step = 0;
+	p->on_frame = NULL;
+	p->frame_ctx = NULL;
+	p->frame_every = 0;
 }
 
 //===--------------------------------------------------------------------===//
@@ -385,17 +391,34 @@ static void revive(run_state *s) {
 // Passes
 //===--------------------------------------------------------------------===//
 
+static void emit_frame(run_state *s, int final) {
+	const emeans_params *p = s->params;
+	if (p->on_frame) {
+		emeans_frame f = {(double)s->rows_done / (double)s->n, s->step, s->out->centroids, final};
+		p->on_frame(p->frame_ctx, &f);
+	}
+}
+
+static double step_alpha(const run_state *s) {
+	return s->params->constant_step ? s->recipe.alpha0
+	                                : emeans_scheduled_alpha(s->recipe.alpha0, s->step, s->recipe.total_steps);
+}
+
 static double run_batch(run_state *s, const int64_t *rows, int64_t count, int closing) {
 	assign_batch(s, rows, count);
 	double obj = accumulate(s, rows, count);
 	if (closing) {
 		record_closing(s, rows, count);
 	}
-	update(s, emeans_scheduled_alpha(s->recipe.alpha0, s->step, s->recipe.total_steps));
+	update(s, step_alpha(s));
 	if ((s->step + 1) % REVIVE_EVERY == 0) {
 		revive(s);
 	}
 	s->step++;
+	s->rows_done += count;
+	if (s->params->frame_every > 0 && s->step % s->params->frame_every == 0) {
+		emit_frame(s, 0);
+	}
 	return obj;
 }
 
@@ -459,11 +482,13 @@ static void close_centroids(run_state *s) {
 static void run(run_state *s, const emeans_params *p) {
 	init_centroids(s, p->init);
 	init_state(s);
+	emit_frame(s, 0);
 	int64_t passes = s->recipe.n_passes;
 	for (int64_t pass = 0; pass < passes; pass++) {
 		run_pass(s, pass, emeans_pass_rows(s->n, p->nepochs, pass), pass == passes - 1);
 	}
 	close_centroids(s);
+	emit_frame(s, 1);
 }
 
 int emeans_fit(const float *x, int64_t n, int64_t d, int64_t k, const emeans_params *p, emeans_output *out,
@@ -479,6 +504,7 @@ int emeans_fit(const float *x, int64_t n, int64_t d, int64_t k, const emeans_par
 	               .spherical = p->spherical != 0,
 	               .threads = p->threads < 1 ? 1 : (p->threads > EMEANS_MAX_THREADS ? EMEANS_MAX_THREADS : p->threads),
 	               .scratch_floats = emeans_kernel_scratch(d),
+	               .params = p,
 	               .out = out};
 	int rc = prepare(&s, p, err);
 	if (rc != EMEANS_OK) {
