@@ -41,12 +41,15 @@ set(EXTENSION_SOURCES
         src/core/assign.c
         src/core/parallel.c
         src/core/emeans.c
+        src/core/geo.c
         # SQL surface: vector I/O and function registration
         src/functions/vec_io.c
         src/functions/emeans_recipe.c
         src/functions/emeans_cluster.c
         src/functions/emeans_assign.c
         src/functions/emeans_trace.c
+        src/functions/emeans_agg.c
+        src/functions/emeans_geo.c
         # Entrypoint
         src/emeans_extension.c
 )

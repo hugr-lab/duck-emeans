@@ -27,7 +27,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 BUILD = os.path.join(ROOT, "build", "crap")
 # Absolute, like cmake's paths, so llvm-cov sees one source file across all the binaries.
 CORE = [os.path.join(ROOT, f) for f in ("src/core/recipe.c", "src/core/rng.c", "src/core/assign.c",
-                                       "src/core/parallel.c", "src/core/emeans.c")]
+                                       "src/core/parallel.c", "src/core/emeans.c", "src/core/geo.c")]
 # As in the Makefile and CMake: on macOS the kernel uses Accelerate.
 PLATFORM_FLAGS = ["-DEMEANS_USE_ACCELERATE", "-framework", "Accelerate"] if platform.system() == "Darwin" else []
 COVERAGE_FLAGS = ["-fprofile-instr-generate", "-fcoverage-mapping", "-O0", "-g"]

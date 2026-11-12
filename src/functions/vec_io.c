@@ -48,11 +48,38 @@ void emeans_set_struct_null(duckdb_vector out, idx_t row, idx_t n_fields) {
 // Reading
 //===--------------------------------------------------------------------===//
 
-static bool element_is_double(duckdb_vector list_vec) {
+static duckdb_type element_type(duckdb_vector list_vec) {
 	duckdb_logical_type type = duckdb_vector_get_column_type(duckdb_list_vector_get_child(list_vec));
-	bool is_double = duckdb_get_type_id(type) == DUCKDB_TYPE_DOUBLE;
+	duckdb_type id = duckdb_get_type_id(type);
 	duckdb_destroy_logical_type(&type);
-	return is_double;
+	return id;
+}
+
+// Element i of a numeric child vector's data; NaN for a type that is not one of these.
+static double element_at(const void *data, duckdb_type type, uint64_t i) {
+	switch (type) {
+	case DUCKDB_TYPE_FLOAT:
+		return ((const float *)data)[i];
+	case DUCKDB_TYPE_DOUBLE:
+		return ((const double *)data)[i];
+	case DUCKDB_TYPE_TINYINT:
+		return ((const int8_t *)data)[i];
+	case DUCKDB_TYPE_SMALLINT:
+		return ((const int16_t *)data)[i];
+	case DUCKDB_TYPE_INTEGER:
+		return ((const int32_t *)data)[i];
+	case DUCKDB_TYPE_BIGINT:
+		return (double)((const int64_t *)data)[i];
+	default:
+		return NAN;
+	}
+}
+
+bool emeans_is_numeric_list(duckdb_vector vec) {
+	duckdb_logical_type type = duckdb_vector_get_column_type(vec);
+	bool list = duckdb_get_type_id(type) == DUCKDB_TYPE_LIST;
+	duckdb_destroy_logical_type(&type);
+	return list && !isnan(element_at(&(int64_t) {0}, element_type(vec), 0));
 }
 
 static duckdb_list_entry list_entry(duckdb_vector list_vec, idx_t row) {
@@ -72,10 +99,10 @@ static int64_t first_null(duckdb_vector child, uint64_t offset, uint64_t length)
 // Copies length elements of the list child, as float, into dst; returns the first non-finite index or -1.
 static int64_t copy_elements(duckdb_vector list_vec, uint64_t offset, uint64_t length, float *dst) {
 	void *data = duckdb_vector_get_data(duckdb_list_vector_get_child(list_vec));
-	bool is_double = element_is_double(list_vec);
+	duckdb_type type = element_type(list_vec);
 	int64_t bad = -1;
 	for (uint64_t i = 0; i < length; i++) {
-		dst[i] = is_double ? (float)((const double *)data)[offset + i] : ((const float *)data)[offset + i];
+		dst[i] = (float)element_at(data, type, offset + i);
 		bad = bad < 0 && !isfinite(dst[i]) ? (int64_t)i : bad;
 	}
 	return bad;
@@ -177,6 +204,20 @@ int emeans_write_matrix(duckdb_vector out, idx_t row, const float *m, int64_t ro
 			return 1;
 		}
 		memcpy((float *)child_data(inner) + start, m + r * cols, (size_t)cols * sizeof(float));
+	}
+	return 0;
+}
+
+int emeans_write_matrix_f64(duckdb_vector out, idx_t row, const double *m, int64_t rows, int64_t cols, char *err) {
+	idx_t first;
+	if (emeans_list_append(out, row, (idx_t)rows, &first, err)) {
+		return 1;
+	}
+	duckdb_vector inner = duckdb_list_vector_get_child(out);
+	for (int64_t r = 0; r < rows; r++) {
+		if (emeans_write_doubles(inner, first + (idx_t)r, m + r * cols, cols, err)) {
+			return 1;
+		}
 	}
 	return 0;
 }

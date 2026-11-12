@@ -28,6 +28,8 @@ e-means site's (Lloyd and e-means side by side), a GPU build, and the community-
 | `emeans_assign(vector, centroids)` | `STRUCT(label INTEGER, sq_distance DOUBLE)`, the nearest centroid |
 | `emeans_spherical(vectors, k [, nepochs [, seed]])` | as `emeans`, for unit vectors: by direction, unit centroids |
 | `emeans_assign_spherical(vector, centroids)` | `STRUCT(label INTEGER, similarity DOUBLE)`, the closest direction |
+| `emeans_agg(points, k [, nepochs [, seed]])` | aggregate, also a window function: centroids of a group's POINT geometries or vectors |
+| `emeans_assign_point(point, centroids)` | `STRUCT(label INTEGER, distance DOUBLE)`, a POINT's nearest centroid (metres for geographic CRSs) |
 | `emeans_recipe(n, k, d, nepochs [, batch_law])` | the batch size, step, law, passes and steps e-means would use |
 | `emeans_trace(train, test, k, nepochs, seed, method, frames_per_epoch, batch_size, revival)` | frames of a run (`'emeans'` or `'lloyd'`): centroids, train and test MSE; for playgrounds and teaching |
 
@@ -50,6 +52,31 @@ FROM chunks GROUP BY doc_id;
 SELECT c.doc_id, c.chunk_id, (emeans_assign(c.embedding, t.r.centroids)).label AS topic
 FROM chunks c JOIN topics t USING (doc_id);
 ```
+
+## Spatial clustering
+
+`emeans_agg` clusters POINT geometries per group, or per window partition, which gives the cluster of
+every row the way PostGIS's [`ST_ClusterKMeans`](https://postgis.net/docs/ST_ClusterKMeans.html) does:
+
+```sql
+-- PostGIS: ST_ClusterKMeans(geom, 8) OVER (PARTITION BY city), ids from 0
+SELECT id, city,
+       (emeans_assign_point(geom, (emeans_agg(geom, 8) OVER (PARTITION BY city)).centroids)).label AS cluster
+FROM places;
+```
+
+Labels start at 1, so `centroids[cluster]` is the row's centroid. The C API has no custom window
+functions, so the per-row label is this second call: each point's nearest final centroid. Other
+differences from PostGIS: there is no `max_radius`, and the result of a group does not depend on the
+order of its rows (the points are sorted before clustering).
+
+The coordinate system decides the geometry. For a geographic CRS (`OGC:CRS84`, `EPSG:4326`, `EPSG:4258`,
+`EPSG:4269` and a few others; x is longitude) the points are clustered on the sphere, so clusters across
+the antimeridian or around a pole are right, centroids come back as `[longitude, latitude]`, and
+`emeans_assign_point` measures metres along the great circle. Any other CRS is planar: centroids and
+distances are in its units, and projected coordinates keep their precision. `emeans_agg` also takes
+vectors (`FLOAT[]`, `DOUBLE[]`, integer lists). An aggregate gets no bind step in the C API, so
+`emeans_agg` runs on one thread with the default work limit.
 
 ## How it compares
 

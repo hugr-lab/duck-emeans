@@ -182,6 +182,23 @@ static bool add_overload(duckdb_scalar_function_set set, const assign_variant *v
 	return ok;
 }
 
+// emeans_assign_point(GEOMETRY, DOUBLE[][]): a POINT against emeans_agg's centroids (emeans_geo.c). The
+// point is ANY, not GEOMETRY, because a GEOMETRY parameter would drop the CRS (see emeans_agg.c); a name
+// of its own keeps ANY from catching emeans_assign's integer-list calls.
+static bool register_point(duckdb_connection connection) {
+	duckdb_logical_type params[2] = {duckdb_create_logical_type(DUCKDB_TYPE_ANY),
+	                                 emeans_matrix_type(DUCKDB_TYPE_DOUBLE)};
+	duckdb_logical_type ret = result_type("distance");
+	duckdb_scalar_function_set set = duckdb_create_scalar_function_set("emeans_assign_point");
+	bool ok = emeans_add_overload(set, "emeans_assign_point", params, 2, ret, emeans_assign_geometry, NULL) &&
+	          duckdb_register_scalar_function_set(connection, set) == DuckDBSuccess;
+	duckdb_destroy_scalar_function_set(&set);
+	duckdb_destroy_logical_type(&ret);
+	duckdb_destroy_logical_type(&params[0]);
+	duckdb_destroy_logical_type(&params[1]);
+	return ok;
+}
+
 static bool register_variant(duckdb_connection connection, const assign_variant *v) {
 	duckdb_logical_type ret = result_type(v->score);
 	duckdb_scalar_function_set set = duckdb_create_scalar_function_set(v->name);
@@ -195,5 +212,6 @@ static bool register_variant(duckdb_connection connection, const assign_variant 
 bool emeans_register_assign(duckdb_connection connection) {
 	static const assign_variant euclidean = {"emeans_assign", "sq_distance", AssignFunction};
 	static const assign_variant spherical = {"emeans_assign_spherical", "similarity", AssignSphericalFunction};
-	return register_variant(connection, &euclidean) && register_variant(connection, &spherical);
+	return register_variant(connection, &euclidean) && register_variant(connection, &spherical) &&
+	       register_point(connection);
 }

@@ -30,7 +30,7 @@ test: test_debug
 test_debug: test_extension_debug
 test_release: test_extension_release
 
-CORE_SOURCES := src/core/recipe.c src/core/rng.c src/core/assign.c src/core/parallel.c src/core/emeans.c
+CORE_SOURCES := src/core/recipe.c src/core/rng.c src/core/assign.c src/core/parallel.c src/core/emeans.c src/core/geo.c
 
 # On macOS the kernel's dot products go to Accelerate (src/core/assign.c), as in the extension build.
 ifeq ($(shell uname -s),Darwin)

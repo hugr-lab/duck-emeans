@@ -25,3 +25,7 @@ bool emeans_register_recipe(duckdb_connection connection);
 bool emeans_register_cluster(duckdb_connection connection);
 bool emeans_register_assign(duckdb_connection connection);
 bool emeans_register_trace(duckdb_connection connection);
+bool emeans_register_agg(duckdb_connection connection);
+
+// emeans_assign_point(GEOMETRY, DOUBLE[][]): the scalar callback, registered with emeans_assign.
+void emeans_assign_geometry(duckdb_function_info info, duckdb_data_chunk input, duckdb_vector output);

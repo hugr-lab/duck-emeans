@@ -4,6 +4,7 @@
 
 #include "assign.h"
 #include "emeans.h"
+#include "geo.h"
 #include "parallel.h"
 #include "recipe.h"
 #include "rng.h"
@@ -666,6 +667,76 @@ static void test_fit_lloyd_mode_and_frames(void) {
 	CHECK(fit(LINE, 6, 2, 2, &p, &r) == EMEANS_OK && quiet.count == 2, "%d frames", quiet.count);
 }
 
+//===--------------------------------------------------------------------===//
+// Geometry
+//===--------------------------------------------------------------------===//
+
+static void test_wkb_points(void) {
+	// The WKB DuckDB writes for POINT(1 2), POINT Z(1 2 3), POINT EMPTY and LINESTRING(0 0, 1 1).
+	static const uint8_t point[] = {1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f, 0, 0, 0, 0, 0, 0, 0, 0x40};
+	static const uint8_t point_z[] = {1, 0xe9, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f, 0, 0, 0, 0,
+	                                  0, 0, 0, 0x40, 0, 0, 0, 0, 0, 0, 8, 0x40};
+	static const uint8_t empty[] = {1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xf8, 0x7f, 0, 0, 0, 0, 0, 0, 0xf8, 0x7f};
+	static const uint8_t line[] = {1, 2, 0, 0, 0, 2, 0, 0, 0};
+	// Big-endian POINT(1 2), and extended WKB with an SRID (4326 = 0x10e6) before the coordinates.
+	static const uint8_t big[] = {0, 0, 0, 0, 1, 0x3f, 0xf0, 0, 0, 0, 0, 0, 0, 0x40, 0, 0, 0, 0, 0, 0, 0};
+	static const uint8_t srid[] = {1, 1, 0, 0, 0x20, 0xe6, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f,
+	                               0, 0, 0, 0, 0, 0, 0, 0x40};
+	double x = 0, y = 0;
+	CHECK(emeans_wkb_point(point, sizeof(point), &x, &y) == EMEANS_WKB_POINT && x == 1 && y == 2, "point");
+	CHECK(emeans_wkb_point(point_z, sizeof(point_z), &x, &y) == EMEANS_WKB_POINT && x == 1 && y == 2, "point z");
+	CHECK(emeans_wkb_point(big, sizeof(big), &x, &y) == EMEANS_WKB_POINT && x == 1 && y == 2, "big-endian");
+	CHECK(emeans_wkb_point(srid, sizeof(srid), &x, &y) == EMEANS_WKB_POINT && x == 1 && y == 2, "srid");
+	CHECK(emeans_wkb_point(empty, sizeof(empty), &x, &y) == EMEANS_WKB_EMPTY, "empty");
+	CHECK(emeans_wkb_point(line, sizeof(line), &x, &y) == EMEANS_WKB_NOT_POINT, "linestring");
+	CHECK(emeans_wkb_point(point, 10, &x, &y) == EMEANS_WKB_MALFORMED, "short");
+	CHECK(emeans_wkb_point(point, 3, &x, &y) == EMEANS_WKB_MALFORMED, "shorter");
+	static const uint8_t bad_order[] = {7, 1, 0, 0, 0};
+	CHECK(emeans_wkb_point(bad_order, sizeof(bad_order), &x, &y) == EMEANS_WKB_MALFORMED, "byte order");
+}
+
+static void test_sphere(void) {
+	CHECK(emeans_crs_is_geographic("OGC:CRS84") && emeans_crs_is_geographic("EPSG:4326"), "geographic");
+	CHECK(!emeans_crs_is_geographic("EPSG:3006") && !emeans_crs_is_geographic(NULL), "planar");
+	// Stockholm (18.07 E, 59.33 N) there and back; (0, 0) is the x axis; the north pole is z.
+	float v[3];
+	double lon, lat;
+	emeans_lonlat_to_unit(18.07, 59.33, v);
+	emeans_unit_to_lonlat(v, &lon, &lat);
+	CHECK_NEAR(lon, 18.07, 1e-5);
+	CHECK_NEAR(lat, 59.33, 1e-5);
+	emeans_lonlat_to_unit(0, 0, v);
+	CHECK(v[0] == 1 && fabsf(v[1]) < 1e-7f && fabsf(v[2]) < 1e-7f, "(0, 0)");
+	float pole[3], equator[3], across[3], near_across[3];
+	emeans_lonlat_to_unit(0, 90, pole);
+	// A quarter of the great circle: R pi / 2 = 10,007,557 m.
+	CHECK_NEAR(emeans_great_circle_m(v, pole), EMEANS_EARTH_RADIUS_M * 3.14159265358979 / 2, 1);
+	// Across the antimeridian: 179.9 E and 179.9 W are 0.2 degrees apart, R 0.2 pi / 180 = 22,239 m.
+	emeans_lonlat_to_unit(179.9, 0, across);
+	emeans_lonlat_to_unit(-179.9, 0, near_across);
+	CHECK_NEAR(emeans_great_circle_m(across, near_across), EMEANS_EARTH_RADIUS_M * 0.2 * 3.14159265358979 / 180, 2);
+	emeans_lonlat_to_unit(10, 0, equator);
+	CHECK(emeans_great_circle_m(equator, equator) == 0, "same point");
+}
+
+static void test_sort_rows(void) {
+	// Rows of 2: (2, 1), (1, 5), (2, 0), (1, 5), (0, 9) sort to (0, 9), (1, 5), (1, 5), (2, 0), (2, 1).
+	float rows[] = {2, 1, 1, 5, 2, 0, 1, 5, 0, 9}, tmp[10];
+	const float sorted[] = {0, 9, 1, 5, 1, 5, 2, 0, 2, 1};
+	emeans_sort_rows(rows, tmp, 5, 2);
+	CHECK(memcmp(rows, sorted, sizeof(sorted)) == 0, "sorted rows");
+	float one[] = {3, 4}, t1[2];
+	emeans_sort_rows(one, t1, 1, 2);
+	CHECK(one[0] == 3 && one[1] == 4, "one row");
+	// Four rows: the result ends in rows after an even number of passes, in tmp after an odd one.
+	float four[] = {4, 3, 2, 1}, t4[4];
+	emeans_sort_rows(four, t4, 4, 1);
+	CHECK(four[0] == 1 && four[3] == 4, "four rows");
+	float three[] = {3, 1, 2}, t3[3];
+	emeans_sort_rows(three, t3, 3, 1);
+	CHECK(three[0] == 1 && three[1] == 2 && three[2] == 3, "three rows");
+}
+
 int main(void) {
 	test_round_pow2();
 	test_passes();
@@ -688,6 +759,9 @@ int main(void) {
 	test_parallel_for();
 	test_fit_threads_same_result();
 	test_fit_lloyd_mode_and_frames();
+	test_wkb_points();
+	test_sphere();
+	test_sort_rows();
 	test_normalize();
 	test_fit_spherical();
 	if (failures) {
