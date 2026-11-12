@@ -7,12 +7,13 @@ report, CRAP = CC^2 * (1 - coverage)^3 + CC):
 
   - test/c/test_core.c with -DEMEANS_FAULT_INJECTION (every out-of-memory path),
   - test/c/test_threads.c,
-  - the SQL logic tests in test/sql on a coverage build of the extension.
+  - the SQL logic tests in test/sql, in DuckDB's unittest with the C++ extension linked in and only the
+    extension's sources instrumented.
 
 Exits 2 when any function scores at or above --threshold (default 10).
 
 Needs clang, llvm-profdata and llvm-cov (xcrun finds them on macOS), lizard (on PATH, or through uvx),
-cmake, and configure/venv from `make configure`. `python3 tools/crap/crap_cpp.py --selftest` checks the
+cmake and ninja (the first run builds DuckDB, as `make release` does). `python3 tools/crap/crap_cpp.py --selftest` checks the
 scoring; `uvx pytest tools/crap` runs that and this file's own tests.
 """
 
@@ -69,21 +70,22 @@ def core_tests():
 
 
 def sql_tests():
-    """Build the extension with coverage, run the SQL logic tests on it; returns the library."""
-    cmake_dir = os.path.join(BUILD, "cmake")
-    flags = " ".join(COVERAGE_FLAGS)
-    run(["cmake", "-S", ".", "-B", cmake_dir, "-DEXTENSION_NAME=emeans", "-DTARGET_DUCKDB_VERSION_MAJOR=1",
-         "-DTARGET_DUCKDB_VERSION_MINOR=5", "-DTARGET_DUCKDB_VERSION_PATCH=6", "-DCMAKE_BUILD_TYPE=Debug",
-         "-DCMAKE_C_COMPILER=clang", f"-DCMAKE_C_FLAGS={flags}", "-DCMAKE_SHARED_LINKER_FLAGS=-fprofile-instr-generate"])
+    """Build DuckDB and this extension, only the extension instrumented (EMEANS_COVERAGE), and run the SQL
+    logic tests in DuckDB's unittest. unittest loads the extension from the build's local repository, as
+    `make test_release` does, so the coverage is in the loadable binary; returns it."""
+    cmake_dir = os.path.join(BUILD, "duckdb")
+    run(["cmake", "-G", "Ninja", "-S", "duckdb", "-B", cmake_dir, "-DCMAKE_BUILD_TYPE=Release",
+         f"-DDUCKDB_EXTENSION_CONFIGS={os.path.join(ROOT, 'extension_config.cmake')}", "-DEMEANS_COVERAGE=ON",
+         "-DOVERRIDE_GIT_DESCRIBE=v2.0.0", "-DENABLE_UNITTEST_CPP_TESTS=FALSE",
+         f"-DUNITTEST_ROOT_DIRECTORY={ROOT}/", "-DCMAKE_C_COMPILER=clang",
+         "-DCMAKE_CXX_COMPILER=clang++",
+         "-DCMAKE_EXE_LINKER_FLAGS=-fprofile-instr-generate", "-DCMAKE_SHARED_LINKER_FLAGS=-fprofile-instr-generate"])
     run(["cmake", "--build", cmake_dir])
-    library = os.path.join(cmake_dir, "libemeans.dylib" if platform.system() == "Darwin" else "libemeans.so")
-    extension = os.path.join(BUILD, "emeans.duckdb_extension")
-    python = os.path.join(ROOT, "configure", "venv", "bin", "python3")
-    run([python, "extension-ci-tools/scripts/append_extension_metadata.py", "-l", library, "-o", extension, "-n",
-         "emeans", "-dv", "v1.5.6", "-evf", "configure/extension_version.txt", "-pf", "configure/platform.txt"])
-    run([python, "-m", "duckdb_sqllogictest", "--test-dir", "test/sql", "--external-extension", extension],
-        env=profile_env("sql"))
-    return library
+    out = run([os.path.join(cmake_dir, "test", "unittest"), "test/sql/*"], env=profile_env("sql"))
+    # A missing extension skips every file and still passes.
+    if "require emeans" in out:
+        sys.exit(f"the SQL tests skipped on 'require emeans':\n{out}")
+    return os.path.join(cmake_dir, "extension", "emeans", "emeans.duckdb_extension")
 
 
 def lcov_report(binaries):

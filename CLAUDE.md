@@ -6,14 +6,17 @@ Guidance for coding agents working in this repository.
 
 `emeans`: a DuckDB loadable extension for e-means clustering (Bessa et al., arXiv 2611.09501): mini-batch
 k-means with EMA centroid updates, batch size and step from fitted scaling laws, dead-cluster revival
-and a closing mean pass. Written in C11 against the **stable** DuckDB C extension API, for DuckDB 2.0.
+and a closing mean pass. For DuckDB 2.0.0. The numerics and SQL functions are C11; the extension is
+moving from the stable C API to DuckDB's C++ API (docs/PLAN.md, "Moving to the C++ API"): stage 1
+builds it as a C++ extension whose entry point registers the C functions through the C API.
 
 ## Hard rules
 
-- C11 only. No C++, no DuckDB internals, no `duckdb_extension_v2.h`, no `USE_UNSTABLE_C_API`.
-- `duckdb_capi/` holds the extension API v1.5.6 headers. That is the stable C API DuckDB 2.0.0 ships
-  (its header accepts no other major version and adds no functions), so `TARGET_DUCKDB_VERSION` stays
-  `v1.5.6`. Only call API functions present there. Tests run on DuckDB 2.0 only.
+- `src/core/` and `src/functions/` are C11. C++ goes in `src/cpp/` and follows the stages in
+  docs/PLAN.md; do not add C++ elsewhere until a stage says so.
+- Until stage 4, `src/functions/` must also build as the C API extension (`make -f Makefile.capi`):
+  only call C API functions present in `duckdb_capi/` (extension API v1.5.6, what DuckDB 2.0.0 ships).
+  No `duckdb_extension_v2.h`, no `USE_UNSTABLE_C_API`. Tests run on DuckDB 2.0.0 only.
 - `src/core/` has no DuckDB dependency.
 - The reference is `faiss/contrib/e_means/base.py` and `e_means.py` (MIT), not the paper: the shipped
   scaling-law coefficients differ from the paper's Table 2. Do not copy the Python; reimplement.
@@ -24,11 +27,11 @@ and a closing mean pass. Written in C11 against the **stable** DuckDB C extensio
 ## Commands
 
 ```sh
-make configure && make release      # build/release/emeans.duckdb_extension
-make test_release                   # SQL tests, latest DuckDB
+GEN=ninja make release              # DuckDB + build/release/extension/emeans/emeans.duckdb_extension
+make test_release                   # SQL tests in DuckDB's unittest
 make test_core                      # C core tests under ASan/UBSan
 make test_threads                   # core on 8 threads under ThreadSanitizer
-make crap                           # CRAP < 10 for every C function; CI fails otherwise
+make crap                           # CRAP < 10 for every C and C++ function; CI fails otherwise
 make compare_faiss                  # against faiss-cpu NumpyEmeans (uv, pinned Python 3.12 env); CI too
 make bench                          # timings for docs/BENCHMARK.md; manual
 ```
@@ -60,6 +63,11 @@ Use `rtk` as a command prefix in this environment (see the user's global instruc
 
 ## Gotchas
 
+- The C++ build needs the shim header first: DuckDB's own `src/include/duckdb_extension.h` turns every
+  `duckdb_*` call into a function-table lookup that the C++ entry point never fills
+  (`target_include_directories(... BEFORE ...)` in CMakeLists.txt).
+- Without `OVERRIDE_GIT_DESCRIBE=v2.0.0` a DuckDB 2.0 build is stamped with the commit hash, and the
+  binary refuses to load into the released DuckDB.
 - DuckDB 2.0 rejects `x -> ...` lambdas by default. Use `lambda x: ...` in tests and docs.
 - `generate_series` has no DOUBLE overload; build grids from `range()`.
 - The sqllogictest runner stops at the first failing file.

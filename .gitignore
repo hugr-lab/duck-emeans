@@ -12,3 +12,4 @@ workspace/
 target/
 node_modules/
 web/emeans.duckdb_extension.wasm
+.cache/

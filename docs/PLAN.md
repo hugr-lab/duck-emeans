@@ -78,7 +78,41 @@ argument once in bind and caches the norms, so the hot path is a plain n × k ×
    and the core's constant-step (Lloyd) mode.
 10. Done: spatial clustering. `emeans_agg` (aggregate and window function over POINT geometries or vectors)
     and `emeans_assign_point`, after PostGIS's `ST_ClusterKMeans`; geographic CRSs on the sphere.
-11. Submission to `duckdb/community-extensions`.
+11. Move from the stable C API to DuckDB's C++ API (in progress), keeping the numerical core in C.
+12. Submission to `duckdb/community-extensions`.
+
+## Moving to the C++ API
+
+The stable C API was chosen so one binary would load in every DuckDB release. emeans targets DuckDB 2.0
+only, so that advantage is small, and the C API keeps blocking things the C++ API has:
+
+- Memory that spills. The C API's only allocator is `duckdb_malloc`, a heap wrapper: emeans's buffers
+  (a float copy of the input, the aggregate's points) are invisible to `memory_limit` and cannot go to
+  disk. The C++ API's `BufferManager` gives spillable, accounted blocks.
+- A real `ST_ClusterKMeans`. A C++ window function (`ExtensionLoader::RegisterFunction(WindowFunction)`
+  in v2.0.0), or an aggregate's window callback, which receives the current row (`idx_t rid`), can
+  return each row's cluster id in one call, where the C API needs `emeans_assign_point` as a second.
+- Argument types at bind (a GEOMETRY's CRS without the ANY parameter), return types at bind (`FLOAT[d]`
+  centroids), interruptible queries (the work limit becomes optional), DuckDB's task scheduler (in place
+  of the thread shim), and bind-time constant folding without the scalar-subquery failure.
+
+The cost: the extension builds against DuckDB's C++ headers (the C++ extension template, DuckDB as a
+submodule, compiled in CI), each DuckDB release needs a rebuild (the community pipeline does this), and
+internal APIs can change between releases.
+
+Stages, each with every SQL test passing:
+
+1. Scaffold (done on the `cpp-api` branch): the C++ template's build, DuckDB v2.0.0 as a submodule, and
+   a C++ entry point that registers the existing C functions unchanged. Inside DuckDB a
+   `duckdb_connection` is a `Connection *` (see `duckdb_connect` in `src/main/capi/v1/duckdb-c.cpp`), so
+   the C++ `Load` hands the C registrations a `Connection` on the loader's database. The C sources
+   include a shim `duckdb_extension.h`, so their calls bind to the C API inside DuckDB. The CRAP gate
+   takes its SQL coverage from a DuckDB build with only the extension instrumented, so it scores the
+   C++ as well as the C. The C API build stays available (`make -f Makefile.capi`) until stage 4.
+2. Spilling memory: the input copy and the aggregate's points in `BufferManager` blocks.
+3. `emeans_cluster_id(geom, k) OVER (...)`, the per-row id in one call, compared again with PostGIS.
+4. Native C++ for the remaining functions, removing the ANY parameter, the thread shim and the C API
+   build; `FLOAT[d]` output; interrupts.
 
 Later, if wanted: an "IVF-Flat in SQL" example where `emeans_assign` gives the partition key (see
 docs/QDRANT.md for how such an index compares).

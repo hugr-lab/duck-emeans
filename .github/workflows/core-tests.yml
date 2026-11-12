@@ -1,6 +1,6 @@
 #
-# Numerical core under ASan/UBSan and ThreadSanitizer, the CRAP gate over every C function, and the
-# comparison with the reference e-means in faiss-cpu.
+# Numerical core under ASan/UBSan and ThreadSanitizer, the CRAP gate over every C and C++ function, and
+# the comparison with the reference e-means in faiss-cpu. The last two build DuckDB from the submodule.
 #
 name: Core tests
 on:
@@ -26,36 +26,28 @@ jobs:
       - run: make test_threads
 
   crap:
-    name: CRAP < 10 for every C function
+    name: CRAP < 10 for every C and C++ function
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-          fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
       - uses: astral-sh/setup-uv@v6
-      - run: make configure
+      - uses: seanmiddleditch/gha-setup-ninja@v6
       - run: make crap
 
   compare_faiss:
     name: against faiss-cpu NumpyEmeans
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-          fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
       - uses: astral-sh/setup-uv@v6
-      - run: make configure
-      - run: make compare_faiss
+      - uses: seanmiddleditch/gha-setup-ninja@v6
+      - run: GEN=ninja make compare_faiss
 
   web:
     name: browser demos (npm test, Scala.js tests)

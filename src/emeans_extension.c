@@ -32,13 +32,24 @@ static bool (*const REGISTRATIONS[])(duckdb_connection) = {
     emeans_register_agg,
 };
 
-DUCKDB_EXTENSION_ENTRYPOINT(duckdb_connection connection, duckdb_extension_info info,
-                            struct duckdb_extension_access *access) {
+bool emeans_register_all(duckdb_connection connection) {
 	for (size_t i = 0; i < sizeof(REGISTRATIONS) / sizeof(REGISTRATIONS[0]); i++) {
 		if (!REGISTRATIONS[i](connection)) {
-			access->set_error(info, "emeans: failed to register functions");
 			return false;
 		}
 	}
 	return true;
 }
+
+// The C API entry point. The C++ build has its own (src/cpp/emeans_extension.cpp), which calls
+// emeans_register_all with a connection on the loader's database.
+#ifndef EMEANS_CPP_BUILD
+DUCKDB_EXTENSION_ENTRYPOINT(duckdb_connection connection, duckdb_extension_info info,
+                            struct duckdb_extension_access *access) {
+	if (!emeans_register_all(connection)) {
+		access->set_error(info, "emeans: failed to register functions");
+		return false;
+	}
+	return true;
+}
+#endif

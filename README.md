@@ -131,7 +131,7 @@ depend on the thread count.
 ```sh
 git clone --recurse-submodules https://github.com/hugr-lab/duck-emeans
 cd duck-emeans
-make configure && make release
+GEN=ninja make release      # builds DuckDB v2.0.0 from the submodule, then the extension
 make test_release test_core test_threads
 make compare_faiss bench   # against faiss-cpu; needs uv
 ```
