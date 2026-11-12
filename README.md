@@ -39,8 +39,9 @@ such as `FLOAT[384]`; build it with `list(embedding ORDER BY id)`. Labels are 1-
 `centroids[labels[i]]` is row i's centroid, and they are the assignments of the last pass. `nepochs`
 defaults to 5 and `seed` to 1234; the same seed gives the same result. The spherical functions assign by
 the largest inner product with the centroid directions, for embeddings compared by cosine similarity;
-like the reference they do not normalise the vectors, so pass unit vectors. Centroids come back as
-`FLOAT[][]`; cast them to `FLOAT[384][]` if you need the array type.
+like the reference they do not normalise the vectors, so pass unit vectors. Centroids come back with the
+vectors' own shape: `FLOAT[384][]` for a list of `FLOAT[384]` (or any fixed-size numeric array), else
+`FLOAT[][]`.
 
 ```sql
 LOAD emeans;
@@ -121,8 +122,8 @@ over the passes:
 SET emeans_max_work = 1e12;   -- default 0: no cap
 ```
 
-A call splits a large batch across up to `emeans_threads` threads (default 0, meaning DuckDB's `threads`
-setting). Small calls, such as one per group in a `GROUP BY`, stay on one thread. The result does not
+A call splits a large batch into up to `emeans_threads` parts (default 0, meaning DuckDB's `threads`
+setting), run as tasks on DuckDB's own scheduler. Small calls, such as one per group in a `GROUP BY`, stay on one thread. The result does not
 depend on the thread count.
 
 The large buffers come from DuckDB's buffer manager: the float copy of the input, the fit's workspace,

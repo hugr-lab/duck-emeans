@@ -31,7 +31,10 @@ void emeans_bind_settings(duckdb_bind_info info);
 // The same from a client context, for binds on the C++ side.
 void emeans_settings_read(duckdb_client_context context, emeans_settings *s);
 bool emeans_register_recipe(duckdb_connection connection, emeans_mem *mem);
-bool emeans_register_cluster(duckdb_connection connection, emeans_mem *mem);
+// emeans() (spherical = 0) and emeans_spherical() over a chunk of their arguments, x as LIST(LIST(FLOAT or
+// DOUBLE)); the result's centroids are LIST(LIST(FLOAT)). Returns 0, or 1 with a message in err.
+int emeans_cluster_chunk(duckdb_data_chunk input, duckdb_vector output, const emeans_settings *settings,
+                         emeans_mem *mem, int spherical, char *err);
 bool emeans_register_assign(duckdb_connection connection, emeans_mem *mem);
 bool emeans_register_trace(duckdb_connection connection, emeans_mem *mem);
 

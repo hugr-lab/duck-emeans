@@ -43,7 +43,8 @@ Use `rtk` as a command prefix in this environment (see the user's global instruc
   shuffle. `assign.c`: the blocked kernel (`emeans_kernel_*`, used everywhere) and the exact loop it is tested
   against. `emeans.c`: the loop, revival and closing (`emeans_fit`, Euclidean and spherical), one
   allocation per call; the kernel's transposed centroids are refreshed whenever a centroid moves.
-  `parallel.c`: the fork-join used to split a large batch. On macOS the kernel uses Accelerate's
+  `parallel.c`: the fork-join used to split a large batch when the caller gives no `params.parallel`;
+  the SQL functions give DuckDB's scheduler (`emeans_query_attach`, `src/cpp/emeans_query.cpp`). On macOS the kernel uses Accelerate's
   `cblas_sgemm` (`EMEANS_USE_ACCELERATE`, set by CMake and the Makefile); `use_blas = 0` forces the
   portable loop, so the tests cover both.
 - `src/core/geo.c`: WKB points, geographic CRSs, longitude/latitude to unit vectors, great-circle
@@ -53,7 +54,9 @@ Use `rtk` as a command prefix in this environment (see the user's global instruc
   tests use it.
 - `src/functions/*.c`: one file per SQL function (`emeans_cluster.c` is `emeans()`); `vec_io.c` reads
   lists of vectors into float matrices and writes nested lists. Labels are 1-based in SQL, 0-based in the core.
-- `src/cpp/`: the C++ side. `emeans_extension.cpp` is the entry point; `emeans_mem.cpp` backs
+- `src/cpp/`: the C++ side. `emeans_extension.cpp` is the entry point; `emeans_cluster.cpp` registers
+  `emeans()`/`emeans_spherical()` (bind: x as `LIST(ANY)`, `FLOAT[d][]` centroids for arrays) and
+  `emeans_agg.cpp` the aggregate, both over the C code in `src/functions`; `emeans_mem.cpp` backs
   `emeans_mem.h` with the buffer manager (every row-sized buffer in `src/functions` comes from there);
   `emeans_window.cpp` is `emeans_cluster_id`, a DuckDB `WindowFunction` that fits each partition with
   `emeans_agg`'s C code through `emeans_agg.h`. It must stay a `WindowFunction`: a window-only

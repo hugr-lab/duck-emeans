@@ -63,3 +63,30 @@ query I
 SELECT count(*) FROM a1 JOIN a8 USING (grp) WHERE a1.r IS DISTINCT FROM a8.r
 ----
 0
+
+# One call split into parts on DuckDB's scheduler. Lloyd mode takes the whole input as one batch: 4,000
+# rows x k 64 x d 32 = 8.2e6 units of work, two parts of at least 4e6 each, so with emeans_threads = 4 the
+# batch is split and its parts run as tasks. The frames are the same as on one part.
+statement ok
+CREATE TABLE wide AS
+SELECT list([((i * 7919 + j * 104729) % 1000) / 1000.0 FOR j IN range(32)]::FLOAT[]) AS x FROM range(4000) r(i);
+
+statement ok
+SET emeans_threads = 1;
+
+statement ok
+CREATE TABLE w1 AS SELECT emeans_trace(x, NULL, 64, 2.0, 1, 'lloyd', NULL, NULL, NULL) AS t FROM wide;
+
+statement ok
+SET emeans_threads = 4;
+
+statement ok
+CREATE TABLE w4 AS SELECT emeans_trace(x, NULL, 64, 2.0, 1, 'lloyd', NULL, NULL, NULL) AS t FROM wide;
+
+query I
+SELECT count(*) FROM w1, w4 WHERE w1.t IS DISTINCT FROM w4.t
+----
+0
+
+statement ok
+RESET emeans_threads;

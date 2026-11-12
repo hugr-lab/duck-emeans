@@ -3,7 +3,8 @@
 // A minimal fork-join: run a task on a few threads and wait for all of them. POSIX threads on Linux and
 // macOS, Win32 threads on Windows; under Emscripten (the WASM build), or when a thread cannot be started,
 // that part runs on the calling thread instead. No pool and no global state: threads live for one call,
-// which is cheap next to the batches worth splitting.
+// which is cheap next to the batches worth splitting. Inside DuckDB the SQL functions use DuckDB's
+// scheduler instead (emeans_params.parallel); this is for callers without one, such as the C tests.
 
 #define EMEANS_MAX_THREADS 64
 

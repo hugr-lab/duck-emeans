@@ -553,6 +553,13 @@ static void test_parallel_for(void) {
 
 // The assignment of a large batch is split across threads; the labels, centroids and objectives must be the
 // same bits on any number of threads. One batch of all 6000 rows: 6000 x 64 x 32 = 12.3e6 units, 3 parts.
+static void reverse_parts(void *ctx, emeans_task_fn fn, void *arg, int parts) {
+	++*(int *)ctx;
+	for (int part = parts - 1; part >= 0; part--) {
+		fn(arg, part, parts);
+	}
+}
+
 static void test_fit_threads_same_result(void) {
 	enum { N = 6000, D = 32, K = 64 };
 	float *x = malloc(sizeof(float) * N * D);
@@ -570,6 +577,15 @@ static void test_fit_threads_same_result(void) {
 	CHECK(memcmp(one.centroids, many.centroids, sizeof(float) * K * D) == 0 &&
 	          memcmp(one.labels, many.labels, sizeof(int32_t) * N) == 0 && one.obj[1] == many.obj[1],
 	      "1 and 4 threads give different results");
+	// A caller's runner, here running the parts one after another in reverse order: the same result.
+	int calls = 0;
+	p.parallel = reverse_parts;
+	p.parallel_ctx = &calls;
+	CHECK(fit(x, N, D, K, &p, &many) == EMEANS_OK, "%s", many.err);
+	CHECK(calls > 0, "the caller's runner was used");
+	CHECK(memcmp(one.centroids, many.centroids, sizeof(float) * K * D) == 0 &&
+	          memcmp(one.labels, many.labels, sizeof(int32_t) * N) == 0 && one.obj[1] == many.obj[1],
+	      "the caller's runner gives a different result");
 	free(x);
 }
 

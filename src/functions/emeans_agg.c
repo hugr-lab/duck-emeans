@@ -397,8 +397,7 @@ static void fit_params(const agg_state *s, const emeans_agg_context *c, emeans_p
 	// off, a random start left clusters up to 25% worse than PostGIS (docs/POSTGIS.md).
 	p->kmeans_plus_plus = 1;
 	p->allocator = emeans_mem_allocator(c->mem);
-	p->interrupted = emeans_query_interrupted;
-	p->interrupt_ctx = c->query;
+	emeans_query_attach(p, c->query);
 }
 
 // The fit of a state's points: in canonical form and sorted, so the result does not depend on the order

@@ -8,6 +8,7 @@
 // centroids; like the reference it does not normalise the rows, which should be unit length already.
 // No DuckDB dependency; docs/ALGORITHM.md has the formulas.
 
+#include "parallel.h"
 #include "recipe.h"
 
 #include <stddef.h>
@@ -60,6 +61,11 @@ typedef struct {
 	emeans_allocator allocator; // the workspace's; zeroed (default) for calloc
 	int (*interrupted)(void *ctx); // asked once per step and per k-means++ centroid; non-zero stops the
 	void *interrupt_ctx;           // fit with EMEANS_INTERRUPTED. NULL (default): never
+	// Runs fn(arg, part, parts) for every part and returns when all have finished, as emeans_parallel_for
+	// does; for a caller with its own threads (the SQL functions use DuckDB's scheduler). NULL (default):
+	// emeans_parallel_for.
+	void (*parallel)(void *ctx, emeans_task_fn fn, void *arg, int parts);
+	void *parallel_ctx;
 } emeans_params;
 
 void emeans_default_params(emeans_params *p);
