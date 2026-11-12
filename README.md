@@ -17,10 +17,10 @@ embedding-sized vectors (d = 768 or 1536). Nothing is installed and no data leav
 
 ## Status
 
-Phases 1 to 6 of [the plan](docs/PLAN.md) are done: the C core with a vectorised distance kernel, threads
-and Accelerate on macOS, the SQL functions below with a cosine variant, validation against the reference
-implementation in faiss-cpu, and the browser demo. Still to come: a playground in the style of the
-e-means site's (Lloyd and e-means side by side), a GPU build, and the community-extension submission.
+Done (see [the plan](docs/PLAN.md)): the C core with a vectorised distance kernel, threads and Accelerate
+on macOS; the SQL functions below, with a cosine variant and spatial clustering of POINT geometries;
+validation against the reference implementation in faiss-cpu; comparisons with PostGIS and Qdrant; and
+two browser demos. Still to come: a GPU build and the community-extension submission.
 
 | Function | Returns |
 |---|---|
@@ -107,6 +107,11 @@ iterations, and the recipe matches for 220 shapes. On an Apple M5 Pro, `emeans()
 macOS it uses Accelerate for the dot products. For embedding-sized vectors (100,000 of d = 768 or 1536)
 it takes 0.67 s and 1.48 s, against 1.26 s and 2.48 s for FAISS's e-means, at the same objective. See
 [docs/BENCHMARK.md](docs/BENCHMARK.md).
+
+For nearest-neighbour search on 1536-d OpenAI embeddings, an IVF index built with `emeans` matches one
+built with Lloyd's k-means in recall at half the build time, but both HNSW indexes, DuckDB's own (`vss`)
+and Qdrant's, answer queries an order of magnitude faster at higher recall; `vss` is close to Qdrant at
+100,000 vectors. See [docs/QDRANT.md](docs/QDRANT.md).
 
 ## Limits
 
