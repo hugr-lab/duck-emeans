@@ -64,11 +64,19 @@ int emeans_crs_is_geographic(const char *crs) {
 	return 0;
 }
 
-void emeans_lonlat_to_unit(double lon, double lat, float out[3]) {
+void emeans_lonlat_to_unit_d(double lon, double lat, double out[3]) {
 	double cl = cos(lat * DEG);
-	out[0] = (float)(cl * cos(lon * DEG));
-	out[1] = (float)(cl * sin(lon * DEG));
-	out[2] = (float)sin(lat * DEG);
+	out[0] = cl * cos(lon * DEG);
+	out[1] = cl * sin(lon * DEG);
+	out[2] = sin(lat * DEG);
+}
+
+void emeans_lonlat_to_unit(double lon, double lat, float out[3]) {
+	double v[3];
+	emeans_lonlat_to_unit_d(lon, lat, v);
+	out[0] = (float)v[0];
+	out[1] = (float)v[1];
+	out[2] = (float)v[2];
 }
 
 void emeans_unit_to_lonlat(const float v[3], double *lon, double *lat) {
@@ -77,12 +85,17 @@ void emeans_unit_to_lonlat(const float v[3], double *lon, double *lat) {
 }
 
 // atan2 of the cross and dot products is accurate for small and large angles alike, where acos is not.
-double emeans_great_circle_m(const float a[3], const float b[3]) {
-	double cx = (double)a[1] * b[2] - (double)a[2] * b[1];
-	double cy = (double)a[2] * b[0] - (double)a[0] * b[2];
-	double cz = (double)a[0] * b[1] - (double)a[1] * b[0];
-	double dot = (double)a[0] * b[0] + (double)a[1] * b[1] + (double)a[2] * b[2];
+double emeans_great_circle_m_d(const double a[3], const double b[3]) {
+	double cx = a[1] * b[2] - a[2] * b[1];
+	double cy = a[2] * b[0] - a[0] * b[2];
+	double cz = a[0] * b[1] - a[1] * b[0];
+	double dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 	return EMEANS_EARTH_RADIUS_M * atan2(sqrt(cx * cx + cy * cy + cz * cz), dot);
+}
+
+double emeans_great_circle_m(const float a[3], const float b[3]) {
+	const double da[3] = {a[0], a[1], a[2]}, db[3] = {b[0], b[1], b[2]};
+	return emeans_great_circle_m_d(da, db);
 }
 
 //===--------------------------------------------------------------------===//

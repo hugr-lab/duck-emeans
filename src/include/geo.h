@@ -30,6 +30,11 @@ void emeans_unit_to_lonlat(const float v[3], double *lon, double *lat);
 // Great-circle distance in metres between two unit vectors.
 double emeans_great_circle_m(const float a[3], const float b[3]);
 
+// The same in double precision, for distances reported to users: float32 unit vectors are only good to
+// about 0.2 m on the Earth's surface.
+void emeans_lonlat_to_unit_d(double lon, double lat, double out[3]);
+double emeans_great_circle_m_d(const double a[3], const double b[3]);
+
 // Sorts n rows of d floats in place, lexicographically (a stable merge sort through tmp, n x d floats).
 // The aggregate sorts its points so that the result does not depend on the order rows arrive in.
 void emeans_sort_rows(float *rows, float *tmp, int64_t n, int64_t d);

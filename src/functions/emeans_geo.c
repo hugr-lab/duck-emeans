@@ -86,14 +86,16 @@ static int32_t nearest_planar(const centroid_list *c, double x, double y, double
 	return best;
 }
 
+// In double precision throughout: the distance is reported, and float32 unit vectors would put ~0.2 m of
+// rounding into it.
 static int32_t nearest_geographic(const centroid_list *c, double lon, double lat, double *distance) {
-	float p[3], q[3];
-	emeans_lonlat_to_unit(lon, lat, p);
+	double p[3], q[3];
+	emeans_lonlat_to_unit_d(lon, lat, p);
 	int32_t best = 0;
 	double best_d = INFINITY;
 	for (int64_t j = 0; j < c->k; j++) {
-		emeans_lonlat_to_unit(c->xy[2 * j], c->xy[2 * j + 1], q);
-		double d = emeans_great_circle_m(p, q);
+		emeans_lonlat_to_unit_d(c->xy[2 * j], c->xy[2 * j + 1], q);
+		double d = emeans_great_circle_m_d(p, q);
 		if (d < best_d) {
 			best_d = d;
 			best = (int32_t)j;

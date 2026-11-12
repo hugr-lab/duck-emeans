@@ -22,7 +22,8 @@ void emeans_buffer_free(emeans_buffer *b);
 
 bool emeans_row_is_valid(duckdb_vector vec, idx_t row);
 
-// Whether a vector is a LIST of a numeric type the readers take (FLOAT, DOUBLE, TINYINT to BIGINT).
+// Whether a vector is a LIST of a numeric type the readers take: FLOAT, DOUBLE, the signed and unsigned
+// integers, HUGEINT and DECIMAL.
 bool emeans_is_numeric_list(duckdb_vector vec);
 void emeans_set_row_null(duckdb_vector vec, idx_t row);
 

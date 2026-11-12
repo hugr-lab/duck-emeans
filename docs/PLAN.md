@@ -80,9 +80,8 @@ argument once in bind and caches the norms, so the hot path is a plain n × k ×
     and `emeans_assign_point`, after PostGIS's `ST_ClusterKMeans`; geographic CRSs on the sphere.
 11. Submission to `duckdb/community-extensions`.
 
-Later, if wanted: an aggregate `emeans_agg(vector, k)` (buffers rows in the state, runs the algorithm
-in finalize; the EMA is order-dependent, so combine concatenates), a DuckDB-WASM 2.0 build for a
-browser demo, and an "IVF-Flat in SQL" example where `emeans_assign` gives the partition key.
+Later, if wanted: an "IVF-Flat in SQL" example where `emeans_assign` gives the partition key (see
+docs/QDRANT.md for how such an index compares).
 
 ## Risks
 

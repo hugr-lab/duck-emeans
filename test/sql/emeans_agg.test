@@ -77,19 +77,44 @@ SELECT (emeans_assign_point('POINT(1 1)'::GEOMETRY, [[0, 0], [10, 10]])).label,
 ----
 1	1.414214	16679.26
 
+# A point 5 m north of a centroid at 59 N: 5 / R radians of latitude, 4.4964e-5 degrees, measured back
+# to within a millimetre (float32 unit vectors would be off by up to ~0.2 m).
+query I
+SELECT abs((emeans_assign_point(('POINT(18 ' || (59 + degrees(5 / 6371008.8)) || ')')::GEOMETRY('OGC:CRS84'),
+                                [[18.0, 59.0]])).distance - 5) < 0.001
+----
+true
+
 # Lists of numbers work too, integer or floating.
 query I
 SELECT list_sort((emeans_agg(v, 2)).centroids) FROM (VALUES ([0, 0]), ([0, 1]), ([10, 10]), ([10, 11])) t(v)
 ----
 [[0.0, 0.5], [10.0, 10.5]]
 
-# Every integer width reads the same.
+# Every integer width, signed or not, HUGEINT and DECIMAL read the same.
 query IIII
 SELECT list_sort((emeans_agg(v::TINYINT[], 2)).centroids), list_sort((emeans_agg(v::SMALLINT[], 2)).centroids),
        list_sort((emeans_agg(v::BIGINT[], 2)).centroids), list_sort((emeans_agg(v::DOUBLE[], 2)).centroids)
 FROM (VALUES ([0, 0]), ([0, 1]), ([10, 10]), ([10, 11])) t(v)
 ----
 [[0.0, 0.5], [10.0, 10.5]]	[[0.0, 0.5], [10.0, 10.5]]	[[0.0, 0.5], [10.0, 10.5]]	[[0.0, 0.5], [10.0, 10.5]]
+
+query IIIII
+SELECT list_sort((emeans_agg(v::UTINYINT[], 2)).centroids), list_sort((emeans_agg(v::USMALLINT[], 2)).centroids),
+       list_sort((emeans_agg(v::UINTEGER[], 2)).centroids), list_sort((emeans_agg(v::UBIGINT[], 2)).centroids),
+       list_sort((emeans_agg(v::HUGEINT[], 2)).centroids)
+FROM (VALUES ([0, 0]), ([0, 1]), ([10, 10]), ([10, 11])) t(v)
+----
+[[0.0, 0.5], [10.0, 10.5]]	[[0.0, 0.5], [10.0, 10.5]]	[[0.0, 0.5], [10.0, 10.5]]	[[0.0, 0.5], [10.0, 10.5]]	[[0.0, 0.5], [10.0, 10.5]]
+
+# A literal such as [0.5, 1.5] is DECIMAL(2,1)[]; DECIMAL(18,3) is stored as BIGINT, DECIMAL(30,2) as HUGEINT.
+# Fixed-size arrays bind to the FLOAT[] overload.
+query IIII
+SELECT (emeans_agg(v, 1)).centroids, (emeans_agg(v::DECIMAL(18,3)[], 1)).centroids,
+       (emeans_agg(v::DECIMAL(30,2)[], 1)).centroids, (emeans_agg(v::FLOAT[2], 1)).centroids
+FROM (VALUES ([0.5, 1.5]), ([1.5, 2.5])) t(v)
+----
+[[1.0, 2.0]]	[[1.0, 2.0]]	[[1.0, 2.0]]	[[1.0, 2.0]]
 
 # NULL points and POINT EMPTY are skipped; a group of none gives NULL, and NULL rows survive.
 query II

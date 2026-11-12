@@ -48,20 +48,25 @@ void emeans_set_struct_null(duckdb_vector out, idx_t row, idx_t n_fields) {
 // Reading
 //===--------------------------------------------------------------------===//
 
-static duckdb_type element_type(duckdb_vector list_vec) {
+// How a list's elements are stored: the physical type, and for DECIMAL the power of ten to divide by.
+typedef struct {
+	duckdb_type type;
+	double divisor;
+} element_kind;
+
+static element_kind element_kind_of(duckdb_vector list_vec) {
 	duckdb_logical_type type = duckdb_vector_get_column_type(duckdb_list_vector_get_child(list_vec));
-	duckdb_type id = duckdb_get_type_id(type);
+	element_kind k = {duckdb_get_type_id(type), 1.0};
+	if (k.type == DUCKDB_TYPE_DECIMAL) {
+		k.type = duckdb_decimal_internal_type(type);
+		k.divisor = pow(10.0, duckdb_decimal_scale(type));
+	}
 	duckdb_destroy_logical_type(&type);
-	return id;
+	return k;
 }
 
-// Element i of a numeric child vector's data; NaN for a type that is not one of these.
-static double element_at(const void *data, duckdb_type type, uint64_t i) {
+static double signed_at(const void *data, duckdb_type type, uint64_t i) {
 	switch (type) {
-	case DUCKDB_TYPE_FLOAT:
-		return ((const float *)data)[i];
-	case DUCKDB_TYPE_DOUBLE:
-		return ((const double *)data)[i];
 	case DUCKDB_TYPE_TINYINT:
 		return ((const int8_t *)data)[i];
 	case DUCKDB_TYPE_SMALLINT:
@@ -75,11 +80,47 @@ static double element_at(const void *data, duckdb_type type, uint64_t i) {
 	}
 }
 
+static double unsigned_at(const void *data, duckdb_type type, uint64_t i) {
+	switch (type) {
+	case DUCKDB_TYPE_UTINYINT:
+		return ((const uint8_t *)data)[i];
+	case DUCKDB_TYPE_USMALLINT:
+		return ((const uint16_t *)data)[i];
+	case DUCKDB_TYPE_UINTEGER:
+		return ((const uint32_t *)data)[i];
+	case DUCKDB_TYPE_UBIGINT:
+		return (double)((const uint64_t *)data)[i];
+	default:
+		return signed_at(data, type, i);
+	}
+}
+
+// Floating types, HUGEINT (upper * 2^64 + lower), or the integer types.
+static double number_at(const void *data, duckdb_type type, uint64_t i) {
+	switch (type) {
+	case DUCKDB_TYPE_FLOAT:
+		return ((const float *)data)[i];
+	case DUCKDB_TYPE_DOUBLE:
+		return ((const double *)data)[i];
+	case DUCKDB_TYPE_HUGEINT:
+		return (double)((const duckdb_hugeint *)data)[i].upper * 18446744073709551616.0 +
+		       (double)((const duckdb_hugeint *)data)[i].lower;
+	default:
+		return unsigned_at(data, type, i);
+	}
+}
+
+// Element i of a numeric child vector's data; NaN for a type that is not a number.
+static double element_at(const void *data, element_kind k, uint64_t i) {
+	return number_at(data, k.type, i) / k.divisor;
+}
+
 bool emeans_is_numeric_list(duckdb_vector vec) {
 	duckdb_logical_type type = duckdb_vector_get_column_type(vec);
 	bool list = duckdb_get_type_id(type) == DUCKDB_TYPE_LIST;
 	duckdb_destroy_logical_type(&type);
-	return list && !isnan(element_at(&(int64_t) {0}, element_type(vec), 0));
+	duckdb_hugeint zero[1] = {{0, 0}};
+	return list && !isnan(element_at(zero, element_kind_of(vec), 0));
 }
 
 static duckdb_list_entry list_entry(duckdb_vector list_vec, idx_t row) {
@@ -99,10 +140,10 @@ static int64_t first_null(duckdb_vector child, uint64_t offset, uint64_t length)
 // Copies length elements of the list child, as float, into dst; returns the first non-finite index or -1.
 static int64_t copy_elements(duckdb_vector list_vec, uint64_t offset, uint64_t length, float *dst) {
 	void *data = duckdb_vector_get_data(duckdb_list_vector_get_child(list_vec));
-	duckdb_type type = element_type(list_vec);
+	element_kind kind = element_kind_of(list_vec);
 	int64_t bad = -1;
 	for (uint64_t i = 0; i < length; i++) {
-		dst[i] = (float)element_at(data, type, offset + i);
+		dst[i] = (float)element_at(data, kind, offset + i);
 		bad = bad < 0 && !isfinite(dst[i]) ? (int64_t)i : bad;
 	}
 	return bad;

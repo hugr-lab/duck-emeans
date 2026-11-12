@@ -7,7 +7,7 @@
 // clustered on the sphere and the centroids are [longitude, latitude]; otherwise on (x, y), or on the
 // vector. NULL points are skipped, and a group of none gives NULL. The points are sorted before
 // clustering, so the result does not depend on the order rows arrive in. Label rows with
-// emeans_assign(point, centroids).
+// emeans_assign_point(point, centroids) for geometries, emeans_assign(vector, centroids) for vectors.
 //
 // An aggregate gets no bind step in the C API, so emeans_agg cannot read settings: it runs on one thread
 // and stops above the default work limit (1e11 units of rows x k x d), as emeans() does by default.
