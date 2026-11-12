@@ -13,6 +13,15 @@ bool emeans_add_overload(duckdb_scalar_function_set set, const char *name, duckd
                          duckdb_scalar_function_bind_t bind);
 
 bool emeans_register_settings(duckdb_connection connection);
+
+// emeans_max_work and the thread count (emeans_threads, 0 meaning DuckDB's threads), captured at bind as
+// the function's bind data by emeans_bind_settings.
+typedef struct {
+	double max_work;
+	int threads;
+} emeans_settings;
+void emeans_bind_settings(duckdb_bind_info info);
 bool emeans_register_recipe(duckdb_connection connection);
 bool emeans_register_cluster(duckdb_connection connection);
 bool emeans_register_assign(duckdb_connection connection);
+bool emeans_register_trace(duckdb_connection connection);

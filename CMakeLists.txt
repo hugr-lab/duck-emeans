@@ -46,6 +46,7 @@ set(EXTENSION_SOURCES
         src/functions/emeans_recipe.c
         src/functions/emeans_cluster.c
         src/functions/emeans_assign.c
+        src/functions/emeans_trace.c
         # Entrypoint
         src/emeans_extension.c
 )

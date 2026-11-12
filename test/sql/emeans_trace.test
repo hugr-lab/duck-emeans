@@ -1,0 +1,86 @@
+# name: test/sql/emeans_trace.test
+# description: emeans_trace() records frames of a Lloyd or e-means run, with train and test MSE
+# group: [emeans]
+
+require emeans
+
+statement ok
+CREATE TABLE line AS SELECT [[0, 0], [1, 0], [2, 0], [3, 0], [10, 0], [11, 0]]::DOUBLE[][] AS x;
+
+# Lloyd from the seed's start, (0, 0) and (3, 0): 0, 1 -> (0.5, 0); 2, 3, 10, 11 -> (6.5, 0); then
+# 0, 1, 2, 3 -> (1.5, 0) and 10, 11 -> (10.5, 0), where it stays. MSE scores every row against its
+# nearest centroid: at the start 0, 1, 1, 0, 49, 64, so 115 / 6; after the first step 0.25, 0.25, 2.25,
+# 6.25, 12.25, 20.25, so 41.5 / 6; at the end 2.25, 0.25, 0.25, 2.25, 0.25, 0.25, so 5.5 / 6.
+statement ok
+CREATE TABLE lloyd AS SELECT emeans_trace(x, x, 2, 3.0, 1, 'lloyd', NULL, NULL, NULL) AS t FROM line;
+
+query II
+SELECT t.batch_size, t.alpha0 FROM lloyd
+----
+6	1.0
+
+query IIIII
+SELECT f.epoch, f.step, round(f.train_mse, 6), round(f.test_mse, 6), f.centroids
+FROM (SELECT unnest(t.frames) AS f FROM lloyd)
+----
+0.0	0	19.166667	19.166667	[[0.0, 0.0], [3.0, 0.0]]
+1.0	1	6.916667	6.916667	[[0.5, 0.0], [6.5, 0.0]]
+2.0	2	0.916667	0.916667	[[1.5, 0.0], [10.5, 0.0]]
+3.0	3	0.916667	0.916667	[[1.5, 0.0], [10.5, 0.0]]
+3.0	3	0.916667	0.916667	[[1.5, 0.0], [10.5, 0.0]]
+
+# The last frame is what emeans() would return for the same settings: here, two Lloyd iterations to
+# (1.5, 10.5).
+query I
+SELECT list_sort((t.frames[-1]).centroids) = list_sort((emeans(x, 2, 3.0, 1)).centroids) FROM lloyd, line
+----
+true
+
+# e-means with the batch law (B = 1 here): frames_per_epoch 2 records every 3 of the 6 steps of a pass,
+# so 2 passes give the start, 4 frames and the final: 6. Without a test set test_mse is NULL.
+query III
+SELECT len(t.frames), (t.frames[1]).test_mse IS NULL, (t.frames[-1]).epoch
+FROM (SELECT emeans_trace(x, NULL, 2, 2.0, 1, 'emeans', 2.0, NULL, NULL) AS t FROM line)
+----
+6	true	2.0
+
+# A given batch size (3) and revival off: 2 steps per pass, so frames_per_epoch 1 records every 2 steps.
+query II
+SELECT t.batch_size, len(t.frames)
+FROM (SELECT emeans_trace(x, NULL, 2, 2.0, 1, 'emeans', 1.0, 3, false) AS t FROM line)
+----
+3	4
+
+# NULL train or k gives NULL; the other NULLs are the defaults (emeans, 4 frames per epoch, the batch law,
+# revival on).
+query II
+SELECT emeans_trace(NULL::DOUBLE[][], NULL, 2, 2.0, 1, NULL, NULL, NULL, NULL) IS NULL,
+       emeans_trace(x, NULL, NULL, 2.0, 1, NULL, NULL, NULL, NULL) IS NULL
+FROM line
+----
+true	true
+
+statement error
+SELECT emeans_trace(x, NULL, 2, 2.0, 1, 'kmeans', NULL, NULL, NULL) FROM line
+----
+emeans_trace: method must be 'emeans' or 'lloyd'
+
+statement error
+SELECT emeans_trace(x, [[1, 2, 3]], 2, 2.0, 1, NULL, NULL, NULL, NULL) FROM line
+----
+emeans_trace: test vectors have 3 elements, train vectors 2
+
+statement error
+SELECT emeans_trace(x, NULL, 2, 2.0, 1, NULL, 0.0, NULL, NULL) FROM line
+----
+frames_per_epoch must be above 0
+
+statement error
+SELECT emeans_trace(x, NULL, 2, 2.0, -5, NULL, NULL, NULL, NULL) FROM line
+----
+seed must be in [0, 4294967295]
+
+statement error
+SELECT emeans_trace(x, NULL, 7, 2.0, 1, NULL, NULL, NULL, NULL) FROM line
+----
+k must not exceed n

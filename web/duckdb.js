@@ -22,5 +22,9 @@ export async function startDuckDB(extensionUrl) {
   const db = await instantiate(duckdb);
   const conn = await db.connect();
   await conn.query(`LOAD '${new URL(extensionUrl, location.href).href}'`);
-  return { query: async sql => (await conn.query(sql)).toArray() };
+  return {
+    query: async sql => (await conn.query(sql)).toArray(),
+    // A text file DuckDB can read by name, such as a CSV for read_csv.
+    registerText: (name, text) => db.registerFileText(name, text),
+  };
 }

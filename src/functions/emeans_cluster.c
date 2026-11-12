@@ -56,15 +56,10 @@ bool emeans_register_settings(duckdb_connection connection) {
 	                       "The result does not depend on it.");
 }
 
-typedef struct {
-	double max_work;
-	int threads;
-} cluster_settings;
-
 static void *copy_settings(void *data) {
-	cluster_settings *copy = (cluster_settings *)malloc(sizeof(cluster_settings));
+	emeans_settings *copy = (emeans_settings *)malloc(sizeof(emeans_settings));
 	if (copy) {
-		*copy = *(cluster_settings *)data;
+		*copy = *(emeans_settings *)data;
 	}
 	return copy;
 }
@@ -86,8 +81,8 @@ static int thread_count(duckdb_client_context context) {
 }
 
 // Bind: capture emeans_max_work and the thread count for this query.
-static void BindSettings(duckdb_bind_info info) {
-	cluster_settings *data = (cluster_settings *)malloc(sizeof(cluster_settings));
+void emeans_bind_settings(duckdb_bind_info info) {
+	emeans_settings *data = (emeans_settings *)malloc(sizeof(emeans_settings));
 	if (!data) {
 		duckdb_scalar_function_bind_set_error(info, "emeans: out of memory");
 		return;
@@ -115,7 +110,7 @@ static void *arg_data(duckdb_data_chunk input, idx_t col) {
 }
 
 typedef struct {
-	cluster_settings settings;
+	emeans_settings settings;
 	int spherical;
 	const char *name;
 } cluster_mode;
@@ -217,7 +212,7 @@ static int cluster_row(duckdb_data_chunk input, idx_t row, const cluster_mode *m
 
 static void cluster_chunk(duckdb_function_info info, duckdb_data_chunk input, duckdb_vector output, int spherical) {
 	idx_t count = duckdb_data_chunk_get_size(input);
-	cluster_mode mode = {*(const cluster_settings *)duckdb_scalar_function_get_bind_data(info), spherical,
+	cluster_mode mode = {*(const emeans_settings *)duckdb_scalar_function_get_bind_data(info), spherical,
 	                     spherical ? "emeans_spherical" : "emeans"};
 	emeans_buffer x = {NULL, 0};
 	char err[EMEANS_ERR_LEN];
@@ -269,7 +264,7 @@ static bool add_overloads(duckdb_scalar_function_set set, const char *name, duck
 	                                 duckdb_create_logical_type(DUCKDB_TYPE_BIGINT)};
 	bool ok = true;
 	for (idx_t n_params = 2; n_params <= 4; n_params++) {
-		ok = ok && emeans_add_overload(set, name, params, n_params, ret, fn, BindSettings);
+		ok = ok && emeans_add_overload(set, name, params, n_params, ret, fn, emeans_bind_settings);
 	}
 	for (int i = 0; i < 4; i++) {
 		duckdb_destroy_logical_type(&params[i]);

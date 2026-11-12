@@ -1,5 +1,6 @@
 #
-# The browser demo (web/) on GitHub Pages, with the WASM build of the extension. Runs after every successful
+# The browser demos on GitHub Pages: web/index.html (plain JavaScript) and web/playground.html (Scala.js and
+# Laminar, built here with Mill), with the WASM build of the extension. Runs after every successful
 # distribution pipeline on main, taking the wasm_eh build from that run, or by hand (the latest such run).
 #
 name: Pages
@@ -48,14 +49,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
       - run: npm test
+      - run: make -C web/playground test
       - name: Assemble the site
-        run: |
-          mkdir _site
-          cp web/index.html web/demo.js web/demo-core.js web/duckdb.js wasm/emeans.duckdb_extension.wasm _site/
+        run: make -C web/playground dist WASM="$GITHUB_WORKSPACE/wasm/emeans.duckdb_extension.wasm"
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: _site
+          path: web/playground/dist
 
   deploy:
     needs: build

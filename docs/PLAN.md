@@ -73,9 +73,9 @@ argument once in bind and caches the norms, so the hot path is a plain n × k ×
    many sequential steps with small batches, so per-step launch overhead matters; the reference needed
    custom Triton and CuTe kernels for it.
 8. Done: the DuckDB-WASM demo (`web/`, GitHub Pages).
-9. A playground in the style of the e-means site's: Lloyd and e-means side by side with Voronoi cells,
-   train and held-out test MSE over epochs, and a playback scrubber, in Scala.js and Laminar. Needs an
-   `emeans_trace` SQL function (frames of centroids and MSE every m steps) and a Lloyd mode in the core.
+9. Done: the playground in the style of the e-means site's (Lloyd and e-means side by side with Voronoi
+   cells, train and held-out test MSE over epochs, playback), in Scala.js and Laminar, on `emeans_trace`
+   and the core's constant-step (Lloyd) mode.
 10. Submission to `duckdb/community-extensions`.
 
 Later, if wanted: an aggregate `emeans_agg(vector, k)` (buffers rows in the state, runs the algorithm

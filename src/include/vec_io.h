@@ -35,6 +35,10 @@ int emeans_read_matrix(duckdb_vector outer, idx_t row, const char *what, emeans_
 // One LIST(T) vector at row `row`, as d floats in buf.
 int emeans_read_vector(duckdb_vector vec, idx_t row, emeans_buffer *buf, int64_t *d, char *err);
 
+// Makes room for count more elements in the list vector's child, points row at them and returns where they
+// start. The child's buffers may move: fetch their pointers afterwards. Returns 0, or 1 with err.
+int emeans_list_append(duckdb_vector out, idx_t row, idx_t count, idx_t *start, char *err);
+
 // Writers for row `row` of a list vector. Return 0, or 1 with a message in err.
 int emeans_write_matrix(duckdb_vector out, idx_t row, const float *m, int64_t rows, int64_t cols, char *err);
 int emeans_write_labels(duckdb_vector out, idx_t row, const int32_t *labels, int64_t n, char *err);
