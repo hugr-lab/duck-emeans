@@ -17,9 +17,24 @@ docs:
   hello_world: |
     LOAD emeans;
 
-    -- The batch size and initial step e-means would use for a million 128-d vectors into 1000 clusters
-    SELECT emeans_recipe(1000000, 1000, 128, 2.0);
+    -- Two unit squares; each centroid ends at the mean of its square's four corners
+    SELECT list_sort((emeans([[0, 0], [0, 1], [1, 0], [1, 1],
+                              [10, 10], [10, 11], [11, 10], [11, 11]], 2)).centroids);
+    -- [[0.5, 0.5], [10.5, 10.5]]
+
+    -- The nearest centroid of one vector, 1-based, and the squared distance to it
+    SELECT emeans_assign([9, 9], [[0, 0], [10, 10]]);
+    -- {'label': 2, 'sq_distance': 2.0}
   extended_description: |
-    Work in progress: this version has the recipe (batch size, step and schedule from the scaling
-    laws). The clustering functions emeans() and emeans_assign() follow; see docs/PLAN.md.
+    e-means (Bessa et al. 2026, arXiv 2611.09501) is mini-batch k-means whose centroids follow an
+    exponential moving average of their batch means, with the batch size and step set by fitted
+    scaling laws. The paper reports Lloyd's 25-epoch loss beaten in 1.4 to 2.6 epochs.
+
+    - emeans(vectors, k [, nepochs [, seed]]): centroids, 1-based labels, objective per pass.
+    - emeans_assign(vector, centroids): the nearest centroid and the squared distance.
+    - emeans_recipe(n, k, d, nepochs): the batch size and step the scaling laws pick.
+
+    Vectors are FLOAT, DOUBLE or integer lists, or fixed-size arrays such as FLOAT[384]. A running call
+    cannot be interrupted, so SET emeans_max_work bounds the work of one call (rows x k x d over all
+    passes, default 1e11).
     Documentation: https://github.com/hugr-lab/duck-emeans

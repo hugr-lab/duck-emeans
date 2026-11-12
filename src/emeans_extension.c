@@ -5,7 +5,8 @@
 DUCKDB_EXTENSION_EXTERN
 
 bool emeans_add_overload(duckdb_scalar_function_set set, const char *name, duckdb_logical_type *params,
-                         idx_t n_params, duckdb_logical_type ret, duckdb_scalar_function_t fn) {
+                         idx_t n_params, duckdb_logical_type ret, duckdb_scalar_function_t fn,
+                         duckdb_scalar_function_bind_t bind) {
 	duckdb_scalar_function f = duckdb_create_scalar_function();
 	duckdb_scalar_function_set_name(f, name);
 	for (idx_t i = 0; i < n_params; i++) {
@@ -13,6 +14,9 @@ bool emeans_add_overload(duckdb_scalar_function_set set, const char *name, duckd
 	}
 	duckdb_scalar_function_set_return_type(f, ret);
 	duckdb_scalar_function_set_function(f, fn);
+	if (bind) {
+		duckdb_scalar_function_set_bind(f, bind);
+	}
 	duckdb_scalar_function_set_special_handling(f);
 	bool ok = duckdb_add_scalar_function_to_set(set, f) == DuckDBSuccess;
 	duckdb_destroy_scalar_function(&f);
@@ -20,7 +24,10 @@ bool emeans_add_overload(duckdb_scalar_function_set set, const char *name, duckd
 }
 
 static bool (*const REGISTRATIONS[])(duckdb_connection) = {
+    emeans_register_settings,
     emeans_register_recipe,
+    emeans_register_cluster,
+    emeans_register_assign,
 };
 
 DUCKDB_EXTENSION_ENTRYPOINT(duckdb_connection connection, duckdb_extension_info info,

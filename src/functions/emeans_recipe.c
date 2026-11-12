@@ -157,8 +157,8 @@ bool emeans_register_recipe(duckdb_connection connection) {
 	    duckdb_create_logical_type(DUCKDB_TYPE_VARCHAR)};
 	duckdb_logical_type ret = recipe_type();
 	duckdb_scalar_function_set set = duckdb_create_scalar_function_set("emeans_recipe");
-	bool ok = emeans_add_overload(set, "emeans_recipe", params, 4, ret, RecipeFunction) &&
-	          emeans_add_overload(set, "emeans_recipe", params, 5, ret, RecipeFunction) &&
+	bool ok = emeans_add_overload(set, "emeans_recipe", params, 4, ret, RecipeFunction, NULL) &&
+	          emeans_add_overload(set, "emeans_recipe", params, 5, ret, RecipeFunction, NULL) &&
 	          duckdb_register_scalar_function_set(connection, set) == DuckDBSuccess;
 	duckdb_destroy_scalar_function_set(&set);
 	duckdb_destroy_logical_type(&ret);
