@@ -93,8 +93,8 @@ The coordinate system decides the geometry. For a geographic CRS (`OGC:CRS84`, `
 the antimeridian or around a pole are right, centroids come back as `[longitude, latitude]`, and
 `emeans_assign_point` measures metres along the great circle. Any other CRS is planar: centroids and
 distances are in its units, and projected coordinates keep their precision. Both also take vectors
-(`FLOAT[]`, `DOUBLE[]`, integer lists), labelled as `emeans_assign` labels them. Both run on one thread
-per group or partition with the default work limit.
+(`FLOAT[]`, `DOUBLE[]`, integer lists, fixed-size arrays), labelled as `emeans_assign` labels them. Both
+read `emeans_max_work` and `emeans_threads` as `emeans()` does.
 
 ## How it compares
 
@@ -113,11 +113,9 @@ and Qdrant's, answer queries an order of magnitude faster at higher recall; `vss
 
 ## Limits
 
-A running `emeans()`, `emeans_spherical()`, `emeans_trace()` or `emeans_cluster_id()` stops when its
-query is interrupted (Ctrl-C in the CLI, `con.interrupt()` in Python): the fit checks once per step.
-`emeans_agg` cannot be interrupted, because the C API gives an aggregate no handle on its query; it
-refuses fits above 1e11 units of work (rows × k × d summed over the passes) instead. To cap the others
-up front as well:
+Every function that fits stops when its query is interrupted (Ctrl-C in the CLI, `con.interrupt()` in
+Python): the fit checks once per step. To also cap the work up front, in units of rows × k × d summed
+over the passes:
 
 ```sql
 SET emeans_max_work = 1e12;   -- default 0: no cap

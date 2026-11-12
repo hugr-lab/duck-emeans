@@ -172,3 +172,30 @@ statement error
 SELECT emeans_assign_point('POINT(1 1)'::GEOMETRY, [[0, 0, 0]])
 ----
 centroid 1 must be two finite numbers, x and y
+
+# emeans_agg reads emeans_max_work at bind, as emeans() does. Group 0: 8 points, k 2, d 2, 5 passes, plus one
+# pass over the 8 points for the k-means++ start: (5 x 8 + 8) x 2 x 2 = 192 units of work.
+statement ok
+SET emeans_max_work = 191;
+
+statement error
+SELECT emeans_agg(g, 2) FROM pts WHERE grp = 0
+----
+rows x k x d over all passes is 192, the limit 191
+
+statement ok
+SET emeans_max_work = 192;
+
+query I
+SELECT (emeans_agg(g, 2)).n FROM pts WHERE grp = 0
+----
+8
+
+statement ok
+RESET emeans_max_work;
+
+# A wrong type fails when the query is bound, before any row is read.
+statement error
+SELECT emeans_agg(x, 1) FROM (SELECT 'a' AS x WHERE false)
+----
+Binder Error: emeans_agg: points must be POINT geometries or lists of numbers, not VARCHAR

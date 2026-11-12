@@ -3,7 +3,7 @@
 //
 // A window function, like ntile: it clusters the whole partition and ignores ORDER BY and the frame. The
 // arguments go into the window's collection; the first row of a partition that is evaluated fits it, as
-// emeans_agg fits a group (src/functions/emeans_agg.c, emeans_points.h), and every row then gets the label
+// emeans_agg fits a group (src/functions/emeans_agg.c, emeans_agg.h), and every row then gets the label
 // emeans_assign_point (or emeans_assign) gives it with those centroids. Partitions are shared between the
 // threads evaluating one hash group, behind a lock, so none is fitted twice.
 //
@@ -16,6 +16,7 @@
 #include "duckdb/function/window/window_executor.hpp"
 #include "duckdb/function/window/window_shared_expressions.hpp"
 #include "duckdb/function/window_function.hpp"
+#include "duckdb/main/capi/capi_internal.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/planner/expression/bound_window_expression.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
@@ -24,7 +25,9 @@
 #include <mutex>
 
 extern "C" {
-#include "emeans_points.h"
+#include "emeans_agg.h"
+#include "emeans_functions.h"
+#include "emeans_query.h"
 #include "recipe.h"
 }
 
@@ -36,6 +39,7 @@ namespace {
 struct PartitionLabels {
 	std::mutex lock;
 	bool done = false;
+	bool interrupted = false;
 	std::string error;
 	vector<int32_t> labels;
 };
@@ -108,15 +112,29 @@ void AddRows(ColumnDataCollection &inputs, const vector<column_t> &columns, idx_
 	kept.assign(flags.get(), flags.get() + (end - begin));
 }
 
+// The settings, the buffer manager and the query, as emeans_agg's bind takes them.
+emeans_agg_context FitContext(ClientContext &client) {
+	CClientContextWrapper wrapper(client);
+	emeans_settings settings;
+	emeans_settings_read(reinterpret_cast<duckdb_client_context>(&wrapper), &settings);
+	return {reinterpret_cast<emeans_mem *>(&BufferManager::GetBufferManager(client)), settings.query,
+	        settings.max_work, settings.threads};
+}
+
 void FitPartition(ClusterIdGlobalState &gstate, idx_t begin, idx_t end, PartitionLabels &out) {
-	auto mem = reinterpret_cast<emeans_mem *>(&BufferManager::GetBufferManager(gstate.client));
+	const auto context = FitContext(gstate.client);
+	auto mem = context.mem;
 	PartitionPoints points;
 	vector<bool> kept;
 	AddRows(*gstate.collection->inputs, gstate.executor.child_idx, begin, end, mem, points, kept);
 	vector<int32_t> labels(NumericCast<idx_t>(emeans_points_count(points.Get())));
 	char err[EMEANS_ERR_LEN];
 	if (!labels.empty()) {
-		Check(emeans_points_label(points.Get(), mem, &gstate.client, labels.data(), err), err);
+		const int rc = emeans_points_label(points.Get(), &context, labels.data(), err);
+		if (rc && emeans_query_interrupted(context.query)) {
+			throw InterruptException();
+		}
+		Check(rc, err);
 	}
 	out.labels.assign(kept.size(), 0);
 	for (idx_t i = 0, j = 0; i < kept.size(); i++) {
@@ -131,10 +149,15 @@ PartitionLabels &Labels(ClusterIdGlobalState &gstate, idx_t begin, idx_t end) {
 	if (!entry->done) {
 		try {
 			FitPartition(gstate, begin, end, *entry);
+		} catch (InterruptException &) {
+			entry->interrupted = true;
 		} catch (std::exception &e) {
 			entry->error = ErrorData(e).RawMessage();
 		}
 		entry->done = true;
+	}
+	if (entry->interrupted) {
+		throw InterruptException();
 	}
 	if (!entry->error.empty()) {
 		throw InvalidInputException(entry->error);

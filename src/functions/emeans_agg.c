@@ -9,15 +9,16 @@
 // clustering, so the result does not depend on the order rows arrive in. Label rows with
 // emeans_assign_point(point, centroids) for geometries, emeans_assign(vector, centroids) for vectors.
 //
-// An aggregate gets no bind step in the C API, so emeans_agg cannot read settings or see its query: it runs
-// on one thread, cannot be interrupted, and stops above a fixed work limit of 1e11 units of rows x k x d.
+// The state and the callbacks; src/cpp/emeans_agg.cpp registers the aggregate, with a bind that takes
+// emeans_max_work, emeans_threads and the query (emeans_agg_context), so a fit is limited, threaded and
+// interruptible as emeans() is.
 
 #include "duckdb.h"
 
 #include "assign.h"
+#include "emeans_agg.h"
 #include "emeans.h"
 #include "emeans_functions.h"
-#include "emeans_points.h"
 #include "emeans_query.h"
 #include "geo.h"
 #include "vec_io.h"
@@ -28,7 +29,6 @@
 #include <string.h>
 
 #define N_FIELDS 7
-#define MAX_WORK 1e11
 
 // A group's points live in an emeans_mem.h block, cap x dim doubles as given: (x, y), (longitude,
 // latitude) or the vector. A callback pins the states it touches and unpins them before it returns, so
@@ -44,22 +44,6 @@ typedef struct {
 	int geometry; // the points were POINT geometries
 	int has_args;
 } agg_state;
-
-static idx_t StateSize(duckdb_function_info info) {
-	(void)info;
-	return sizeof(agg_state);
-}
-
-static void StateInit(duckdb_function_info info, duckdb_aggregate_state state) {
-	(void)info;
-	memset(state, 0, sizeof(agg_state));
-}
-
-static void StateDestroy(duckdb_aggregate_state *states, idx_t count) {
-	for (idx_t i = 0; i < count; i++) {
-		emeans_block_free(((agg_state *)states[i])->block);
-	}
-}
 
 //===--------------------------------------------------------------------===//
 // Pinning
@@ -266,33 +250,23 @@ static int update_row(duckdb_data_chunk input, idx_t row, update_ctx *ctx, agg_s
 	       append_rows(s, ctx->row, 1, dim, &ctx->pins, err);
 }
 
-static void report(duckdb_function_info info, const char *err) {
-	char msg[EMEANS_ERR_LEN + 16];
-	snprintf(msg, sizeof(msg), "emeans_agg: %s", err);
-	duckdb_aggregate_function_set_error(info, msg);
-}
-
-static void Update(duckdb_function_info info, duckdb_data_chunk input, duckdb_aggregate_state *states) {
+int emeans_agg_update(duckdb_data_chunk input, void **states, const emeans_agg_context *c, char *err) {
 	idx_t count = duckdb_data_chunk_get_size(input);
 	duckdb_vector points = duckdb_data_chunk_get_vector(input, 0);
-	pin_list pins = {duckdb_aggregate_function_get_extra_info(info), malloc(count * sizeof(agg_state *)), 0};
-	update_ctx ctx = {points, is_geometry(points), column_is_geographic(points), {NULL, 0, 0, NULL, NULL}, NULL, 0, pins};
-	char err[EMEANS_ERR_LEN];
-	if (!pins.states || check_points_type(points, err)) {
-		report(info, pins.states ? err : "out of memory");
-		free(pins.states);
-		return;
+	pin_list pins = {c->mem, malloc((count ? count : 1) * sizeof(agg_state *)), 0};
+	if (!pins.states) {
+		return emeans_error(err, "out of memory");
 	}
-	for (idx_t row = 0; row < count; row++) {
-		if (update_row(input, row, &ctx, (agg_state *)states[row], err)) {
-			report(info, err);
-			break;
-		}
+	update_ctx ctx = {points, is_geometry(points), column_is_geographic(points), {NULL, 0, 0, NULL, NULL}, NULL, 0, pins};
+	int rc = check_points_type(points, err);
+	for (idx_t row = 0; rc == 0 && row < count; row++) {
+		rc = update_row(input, row, &ctx, (agg_state *)states[row], err);
 	}
 	unpin_all(&ctx.pins);
 	free(pins.states);
 	emeans_buffer_free(&ctx.buf);
 	free(ctx.row);
+	return rc;
 }
 
 static int combine_one(agg_state *src, agg_state *dst, pin_list *pins, char *err) {
@@ -304,19 +278,15 @@ static int combine_one(agg_state *src, agg_state *dst, pin_list *pins, char *err
 	       append_rows(dst, src->rows, src->n, src->dim, pins, err);
 }
 
-static void Combine(duckdb_function_info info, duckdb_aggregate_state *source, duckdb_aggregate_state *target,
-                    idx_t count) {
-	char err[EMEANS_ERR_LEN];
+int emeans_agg_combine(void **sources, void **targets, idx_t count, const emeans_agg_context *c, char *err) {
 	agg_state *pinned[2];
-	pin_list pins = {duckdb_aggregate_function_get_extra_info(info), pinned, 0};
-	for (idx_t i = 0; i < count; i++) {
-		int rc = combine_one((agg_state *)source[i], (agg_state *)target[i], &pins, err);
+	pin_list pins = {c->mem, pinned, 0};
+	int rc = 0;
+	for (idx_t i = 0; rc == 0 && i < count; i++) {
+		rc = combine_one((agg_state *)sources[i], (agg_state *)targets[i], &pins, err);
 		unpin_all(&pins);
-		if (rc) {
-			report(info, err);
-			return;
-		}
 	}
+	return rc;
 }
 
 //===--------------------------------------------------------------------===//
@@ -416,31 +386,31 @@ static void free_fit(fit_buffers *b) {
 	free(b->obj);
 }
 
-// query (emeans_query.h) is the query to stop with, or NULL: the C API gives an aggregate none.
-static void fit_params(const agg_state *s, emeans_mem *mem, void *query, emeans_params *p) {
+static void fit_params(const agg_state *s, const emeans_agg_context *c, emeans_params *p) {
 	emeans_default_params(p);
 	p->nepochs = s->nepochs;
 	p->seed = s->seed;
 	p->spherical = s->geographic;
-	p->max_work = query ? 0 : MAX_WORK; // without a query to stop with, a fixed limit bounds the run time
+	p->max_work = c->max_work;
+	p->threads = c->threads;
 	// Unlike emeans() and the reference, k-means++ seeding: on 2-D maps, where the reference turns revival
 	// off, a random start left clusters up to 25% worse than PostGIS (docs/POSTGIS.md).
 	p->kmeans_plus_plus = 1;
-	p->allocator = emeans_mem_allocator(mem);
+	p->allocator = emeans_mem_allocator(c->mem);
 	p->interrupted = emeans_query_interrupted;
-	p->interrupt_ctx = query;
+	p->interrupt_ctx = c->query;
 }
 
 // The fit of a state's points: in canonical form and sorted, so the result does not depend on the order
 // rows arrived in. The sort buffer goes back before the fit, which takes its own workspace. s is pinned;
 // on success b holds the centroids in b->c and out describes the run.
-static int fit_model(const agg_state *s, emeans_mem *mem, void *query, const layout *l, fit_buffers *b,
+static int fit_model(const agg_state *s, const emeans_agg_context *c, const layout *l, fit_buffers *b,
                      emeans_output *out, char *err) {
 	emeans_params p;
-	fit_params(s, mem, query, &p);
+	fit_params(s, c, &p);
 	emeans_recipe recipe;
 	if (emeans_resolve_recipe(s->n, s->k, l->dim, p.nepochs, p.law, 0, 0, &recipe, err) ||
-	    alloc_fit(b, s, l->dim, recipe.n_passes, mem, err)) {
+	    alloc_fit(b, s, l->dim, recipe.n_passes, c->mem, err)) {
 		return 1;
 	}
 	float *x = emeans_block_data(b->x);
@@ -452,37 +422,34 @@ static int fit_model(const agg_state *s, emeans_mem *mem, void *query, const lay
 	return emeans_fit(x, s->n, l->dim, s->k, &p, out, err) != EMEANS_OK;
 }
 
-static int fit_state(const agg_state *s, emeans_mem *mem, duckdb_vector result, idx_t row, char *err) {
+static int fit_state(const agg_state *s, const emeans_agg_context *c, duckdb_vector result, idx_t row, char *err) {
 	layout l = make_layout(s, s->geometry);
 	fit_buffers b = {NULL, NULL, NULL, NULL, NULL};
 	emeans_output out;
-	int rc = fit_model(s, mem, NULL, &l, &b, &out, err) || write_result(result, row, s, &l, &out, err);
+	int rc = fit_model(s, c, &l, &b, &out, err) || write_result(result, row, s, &l, &out, err);
 	free_fit(&b);
 	return rc;
 }
 
-static void Finalize(duckdb_function_info info, duckdb_aggregate_state *source, duckdb_vector result, idx_t count,
-                     idx_t offset) {
-	char err[EMEANS_ERR_LEN];
+int emeans_agg_finalize(void **states, idx_t count, duckdb_vector result, idx_t offset,
+                        const emeans_agg_context *c, char *err) {
 	agg_state *pinned[1];
-	pin_list pins = {duckdb_aggregate_function_get_extra_info(info), pinned, 0};
-	for (idx_t i = 0; i < count; i++) {
-		agg_state *s = (agg_state *)source[i];
+	pin_list pins = {c->mem, pinned, 0};
+	int rc = 0;
+	for (idx_t i = 0; rc == 0 && i < count; i++) {
+		agg_state *s = (agg_state *)states[i];
 		if (s->n == 0) {
 			emeans_set_struct_null(result, offset + i, N_FIELDS);
 			continue;
 		}
-		int rc = pin_state(s, &pins, err) || fit_state(s, pins.mem, result, offset + i, err);
+		rc = pin_state(s, &pins, err) || fit_state(s, c, result, offset + i, err);
 		unpin_all(&pins);
-		if (rc) {
-			report(info, err);
-			return;
-		}
 	}
+	return rc;
 }
 
 //===--------------------------------------------------------------------===//
-// emeans_cluster_id: one state per window frame (emeans_points.h)
+// emeans_cluster_id: one state per window frame (emeans_agg.h)
 //===--------------------------------------------------------------------===//
 
 size_t emeans_points_size(void) {
@@ -604,84 +571,18 @@ int64_t emeans_points_count(const void *state) {
 	return ((const agg_state *)state)->n;
 }
 
-int emeans_points_label(void *state, emeans_mem *mem, void *query, int32_t *labels, char *err) {
+int emeans_points_label(void *state, const emeans_agg_context *c, int32_t *labels, char *err) {
 	agg_state *s = state;
 	agg_state *pinned[1];
-	pin_list pins = {mem, pinned, 0};
+	pin_list pins = {c->mem, pinned, 0};
 	if (pin_state(s, &pins, err)) {
 		return 1;
 	}
 	layout l = make_layout(s, s->geometry); // reads the points, so after the pin
 	fit_buffers b = {NULL, NULL, NULL, NULL, NULL};
 	emeans_output out;
-	int rc = fit_model(s, mem, query, &l, &b, &out, err) || label_state(s, &l, b.c, labels, err);
+	int rc = fit_model(s, c, &l, &b, &out, err) || label_state(s, &l, b.c, labels, err);
 	free_fit(&b);
 	unpin_all(&pins);
 	return rc;
-}
-
-//===--------------------------------------------------------------------===//
-// Registration
-//===--------------------------------------------------------------------===//
-
-static duckdb_logical_type result_type(void) {
-	duckdb_logical_type members[N_FIELDS] = {
-	    emeans_matrix_type(DUCKDB_TYPE_DOUBLE),         emeans_list_type(DUCKDB_TYPE_DOUBLE),
-	    duckdb_create_logical_type(DUCKDB_TYPE_BIGINT), duckdb_create_logical_type(DUCKDB_TYPE_DOUBLE),
-	    duckdb_create_logical_type(DUCKDB_TYPE_BIGINT), duckdb_create_logical_type(DUCKDB_TYPE_BIGINT),
-	    duckdb_create_logical_type(DUCKDB_TYPE_BOOLEAN)};
-	const char *names[N_FIELDS] = {"centroids", "obj", "batch_size", "alpha0", "n_splits", "n", "geographic"};
-	duckdb_logical_type type = duckdb_create_struct_type(members, names, N_FIELDS);
-	for (int i = 0; i < N_FIELDS; i++) {
-		duckdb_destroy_logical_type(&members[i]);
-	}
-	return type;
-}
-
-static bool add_overload(duckdb_aggregate_function_set set, duckdb_logical_type points, idx_t n_params,
-                         duckdb_logical_type ret, emeans_mem *mem) {
-	duckdb_logical_type extra[3] = {duckdb_create_logical_type(DUCKDB_TYPE_BIGINT),
-	                                duckdb_create_logical_type(DUCKDB_TYPE_DOUBLE),
-	                                duckdb_create_logical_type(DUCKDB_TYPE_BIGINT)};
-	duckdb_aggregate_function f = duckdb_create_aggregate_function();
-	duckdb_aggregate_function_set_name(f, "emeans_agg");
-	duckdb_aggregate_function_add_parameter(f, points);
-	for (idx_t i = 0; i + 1 < n_params; i++) {
-		duckdb_aggregate_function_add_parameter(f, extra[i]);
-	}
-	duckdb_aggregate_function_set_return_type(f, ret);
-	duckdb_aggregate_function_set_functions(f, StateSize, StateInit, Update, Combine, Finalize);
-	duckdb_aggregate_function_set_destructor(f, StateDestroy);
-	duckdb_aggregate_function_set_extra_info(f, mem, NULL);
-	// NULL nepochs and seed mean the defaults, so the callbacks must see NULLs.
-	duckdb_aggregate_function_set_special_handling(f);
-	bool ok = duckdb_add_aggregate_function_to_set(set, f) == DuckDBSuccess;
-	duckdb_destroy_aggregate_function(&f);
-	for (int i = 0; i < 3; i++) {
-		duckdb_destroy_logical_type(&extra[i]);
-	}
-	return ok;
-}
-
-bool emeans_register_agg(duckdb_connection connection, emeans_mem *mem) {
-	// GEOMETRY arrives as ANY: a GEOMETRY parameter would cast GEOMETRY('OGC:CRS84') to plain GEOMETRY and
-	// drop the CRS before the function could see it. ANY also takes lists of other numeric types, such as
-	// INTEGER[] literals, which Update reads like the others; anything else is an error.
-	duckdb_logical_type points[3] = {duckdb_create_logical_type(DUCKDB_TYPE_ANY),
-	                                 emeans_list_type(DUCKDB_TYPE_FLOAT), emeans_list_type(DUCKDB_TYPE_DOUBLE)};
-	duckdb_logical_type ret = result_type();
-	duckdb_aggregate_function_set set = duckdb_create_aggregate_function_set("emeans_agg");
-	bool ok = true;
-	for (int t = 0; t < 3; t++) {
-		for (idx_t n_params = 2; n_params <= 4; n_params++) {
-			ok = ok && add_overload(set, points[t], n_params, ret, mem);
-		}
-	}
-	ok = ok && duckdb_register_aggregate_function_set(connection, set) == DuckDBSuccess;
-	duckdb_destroy_aggregate_function_set(&set);
-	duckdb_destroy_logical_type(&ret);
-	for (int t = 0; t < 3; t++) {
-		duckdb_destroy_logical_type(&points[t]);
-	}
-	return ok;
 }
