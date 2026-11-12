@@ -68,6 +68,11 @@ checks it without lizard or a report. To score the Python tooling itself with
   `duckdb_scalar_function_set_error`. Allocation failures are reported, not ignored.
 - No per-iteration allocation in algorithm loops; workspaces are allocated once per call.
 - Allocate in `src/core` with `emeans_malloc` / `emeans_calloc` / `emeans_realloc` (`emeans_alloc.h`),
-  so that `test_core`'s fault injection covers the out-of-memory path.
+  so that `test_core`'s fault injection covers the out-of-memory path. `emeans_fit` takes its workspace
+  from `params.allocator` when one is set.
+- In `src/functions`, anything that grows with the number of rows comes from `emeans_mem.h` blocks
+  (DuckDB's buffer manager in the C++ build), not malloc: `emeans_managed_buffer` for input matrices,
+  `emeans_mem_allocator` for the fit. Small and per-row buffers stay on the heap.
+- `test/sql/emeans_memory.test` passes only in the C++ build; the C API build (`Makefile.capi`) mallocs.
 - Keep every function at CRAP < 10 (`make crap`). In practice: cyclomatic complexity below 10 and tests
   for every branch.

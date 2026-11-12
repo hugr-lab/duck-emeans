@@ -55,6 +55,7 @@ set(EXTENSION_SOURCES
         src/functions/emeans_trace.c
         src/functions/emeans_agg.c
         src/functions/emeans_geo.c
+        src/functions/emeans_mem_capi.c
         # Entrypoint
         src/emeans_extension.c
 )
@@ -78,7 +79,7 @@ endfunction()
 # In-tree C++ build. The C sources see cpp_shim/duckdb_extension.h instead of duckdb_capi/'s, so their
 # duckdb_* calls bind to the C API inside DuckDB rather than to an extension function table.
 if(COMMAND build_loadable_extension AND NOT EMEANS_CAPI)
-    set(EMEANS_CPP_SOURCES ${EXTENSION_SOURCES} src/cpp/emeans_extension.cpp)
+    set(EMEANS_CPP_SOURCES ${EXTENSION_SOURCES} src/cpp/emeans_extension.cpp src/cpp/emeans_mem.cpp)
     set(EMEANS_LINK_SCOPE "")
     build_static_extension(${EXTENSION_NAME} ${EMEANS_CPP_SOURCES})
     build_loadable_extension(${EXTENSION_NAME} " " ${EMEANS_CPP_SOURCES})

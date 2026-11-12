@@ -7,6 +7,7 @@
 // finite values. Output lists are appended to the list vector's child, which may move on reserve.
 
 #include "duckdb_extension.h"
+#include "emeans_mem.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -14,9 +15,15 @@
 typedef struct {
 	float *data;
 	size_t cap; // floats
+	int managed; // in an emeans_mem.h block (pinned throughout), not on the heap
+	emeans_mem *mem;
+	emeans_block *block;
 } emeans_buffer;
 
-// Grows b to hold at least count floats. Returns 0, or 1 with "out of memory" in err.
+// A buffer for a whole input matrix, in a block from mem. {NULL, 0} is a heap buffer, for small things.
+emeans_buffer emeans_managed_buffer(emeans_mem *mem);
+
+// Grows b to hold at least count floats, keeping its contents. Returns 0, or 1 with a message in err.
 int emeans_buffer_reserve(emeans_buffer *b, size_t count, char *err);
 void emeans_buffer_free(emeans_buffer *b);
 

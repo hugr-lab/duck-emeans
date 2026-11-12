@@ -28,8 +28,12 @@ DUCKDB_EXTENSION_EXTERN
 #define N_FIELDS 7
 #define MAX_WORK 1e11
 
+// A group's points live in an emeans_mem.h block, cap x dim doubles as given: (x, y), (longitude,
+// latitude) or the vector. A callback pins the states it touches and unpins them before it returns, so
+// between callbacks the buffer manager may write the points to temp_directory (pin_list).
 typedef struct {
-	double *rows; // n x dim, as given: (x, y), (longitude, latitude) or the vector
+	emeans_block *block;
+	double *rows; // the block's data while pinned, NULL otherwise
 	int64_t n, cap, dim;
 	int64_t k;
 	double nepochs;
@@ -51,8 +55,39 @@ static void StateInit(duckdb_function_info info, duckdb_aggregate_state state) {
 
 static void StateDestroy(duckdb_aggregate_state *states, idx_t count) {
 	for (idx_t i = 0; i < count; i++) {
-		free(((agg_state *)states[i])->rows);
+		emeans_block_free(((agg_state *)states[i])->block);
 	}
+}
+
+//===--------------------------------------------------------------------===//
+// Pinning
+//===--------------------------------------------------------------------===//
+
+// The states one callback has pinned; a state is pinned exactly when it is on the list.
+typedef struct {
+	emeans_mem *mem;
+	agg_state **states;
+	idx_t n;
+} pin_list;
+
+static int pin_state(agg_state *s, pin_list *pins, char *err) {
+	if (!s->block || s->rows) {
+		return 0;
+	}
+	if (emeans_block_pin(s->block, err)) {
+		return 1;
+	}
+	s->rows = emeans_block_data(s->block);
+	pins->states[pins->n++] = s;
+	return 0;
+}
+
+static void unpin_all(pin_list *pins) {
+	for (idx_t i = 0; i < pins->n; i++) {
+		emeans_block_unpin(pins->states[i]->block);
+		pins->states[i]->rows = NULL;
+	}
+	pins->n = 0;
 }
 
 //===--------------------------------------------------------------------===//
@@ -75,7 +110,29 @@ static int set_args(agg_state *s, int64_t k, double nepochs, uint32_t seed, int 
 	return 0;
 }
 
-static int append_rows(agg_state *s, const double *rows, int64_t count, int64_t dim, char *err) {
+// A block for at least `need` points, doubling, with the points so far copied over. s is pinned (or has
+// no block yet), and the new block is pinned and on the list.
+static int grow(agg_state *s, int64_t need, pin_list *pins, char *err) {
+	int64_t cap = need > 2 * s->cap ? need : 2 * s->cap;
+	emeans_block *grown = emeans_block_alloc(pins->mem, (size_t)(cap * s->dim) * sizeof(double), err);
+	if (!grown) {
+		return 1;
+	}
+	double *rows = emeans_block_data(grown);
+	if (s->n) {
+		memcpy(rows, s->rows, (size_t)(s->n * s->dim) * sizeof(double));
+	}
+	if (!s->block) {
+		pins->states[pins->n++] = s;
+	}
+	emeans_block_free(s->block);
+	s->block = grown;
+	s->rows = rows;
+	s->cap = cap;
+	return 0;
+}
+
+static int append_rows(agg_state *s, const double *rows, int64_t count, int64_t dim, pin_list *pins, char *err) {
 	if (s->dim != 0 && s->dim != dim) {
 		snprintf(err, EMEANS_ERR_LEN, "points have %lld dimensions, earlier ones %lld", (long long)dim,
 		         (long long)s->dim);
@@ -83,14 +140,8 @@ static int append_rows(agg_state *s, const double *rows, int64_t count, int64_t 
 	}
 	s->dim = dim;
 	int64_t need = s->n + count;
-	if (need > s->cap) {
-		int64_t cap = need > 2 * s->cap ? need : 2 * s->cap;
-		double *grown = realloc(s->rows, (size_t)(cap * dim) * sizeof(double));
-		if (!grown) {
-			return emeans_error(err, "out of memory");
-		}
-		s->rows = grown;
-		s->cap = cap;
+	if (pin_state(s, pins, err) || (need > s->cap && grow(s, need, pins, err))) {
+		return 1;
 	}
 	memcpy(s->rows + s->n * dim, rows, (size_t)(count * dim) * sizeof(double));
 	s->n = need;
@@ -166,6 +217,7 @@ typedef struct {
 	emeans_buffer buf; // a vector point, as read
 	double *row;       // the point as stored
 	int64_t row_cap;
+	pin_list pins;
 } update_ctx;
 
 static int reserve_row(update_ctx *ctx, int64_t dim, char *err) {
@@ -209,7 +261,7 @@ static int update_row(duckdb_data_chunk input, idx_t row, update_ctx *ctx, agg_s
 	}
 	s->geometry = ctx->geometry;
 	return read_args(input, row, &k, &nepochs, &seed, err) || set_args(s, k, nepochs, seed, ctx->geographic, err) ||
-	       append_rows(s, ctx->row, 1, dim, err);
+	       append_rows(s, ctx->row, 1, dim, &ctx->pins, err);
 }
 
 static void report(duckdb_function_info info, const char *err) {
@@ -221,10 +273,12 @@ static void report(duckdb_function_info info, const char *err) {
 static void Update(duckdb_function_info info, duckdb_data_chunk input, duckdb_aggregate_state *states) {
 	idx_t count = duckdb_data_chunk_get_size(input);
 	duckdb_vector points = duckdb_data_chunk_get_vector(input, 0);
-	update_ctx ctx = {points, is_geometry(points), column_is_geographic(points), {NULL, 0}, NULL, 0};
+	pin_list pins = {duckdb_aggregate_function_get_extra_info(info), malloc(count * sizeof(agg_state *)), 0};
+	update_ctx ctx = {points, is_geometry(points), column_is_geographic(points), {NULL, 0, 0, NULL, NULL}, NULL, 0, pins};
 	char err[EMEANS_ERR_LEN];
-	if (check_points_type(points, err)) {
-		report(info, err);
+	if (!pins.states || check_points_type(points, err)) {
+		report(info, pins.states ? err : "out of memory");
+		free(pins.states);
 		return;
 	}
 	for (idx_t row = 0; row < count; row++) {
@@ -233,24 +287,30 @@ static void Update(duckdb_function_info info, duckdb_data_chunk input, duckdb_ag
 			break;
 		}
 	}
+	unpin_all(&ctx.pins);
+	free(pins.states);
 	emeans_buffer_free(&ctx.buf);
 	free(ctx.row);
 }
 
-static int combine_one(const agg_state *src, agg_state *dst, char *err) {
+static int combine_one(agg_state *src, agg_state *dst, pin_list *pins, char *err) {
 	if (src->n == 0) {
 		return 0;
 	}
 	dst->geometry = src->geometry;
-	return set_args(dst, src->k, src->nepochs, src->seed, src->geographic, err) ||
-	       append_rows(dst, src->rows, src->n, src->dim, err);
+	return pin_state(src, pins, err) || set_args(dst, src->k, src->nepochs, src->seed, src->geographic, err) ||
+	       append_rows(dst, src->rows, src->n, src->dim, pins, err);
 }
 
 static void Combine(duckdb_function_info info, duckdb_aggregate_state *source, duckdb_aggregate_state *target,
                     idx_t count) {
 	char err[EMEANS_ERR_LEN];
+	agg_state *pinned[2];
+	pin_list pins = {duckdb_aggregate_function_get_extra_info(info), pinned, 0};
 	for (idx_t i = 0; i < count; i++) {
-		if (combine_one((const agg_state *)source[i], (agg_state *)target[i], err)) {
+		int rc = combine_one((agg_state *)source[i], (agg_state *)target[i], &pins, err);
+		unpin_all(&pins);
+		if (rc) {
 			report(info, err);
 			return;
 		}
@@ -326,53 +386,66 @@ static int write_result(duckdb_vector result, idx_t row, const agg_state *s, con
 	return rc;
 }
 
+// The float32 matrix, its sort buffer and the labels are blocks, pinned throughout; the small ones malloc.
 typedef struct {
-	float *x, *tmp, *c;
-	int32_t *labels;
+	emeans_block *x, *tmp, *labels;
+	float *c;
 	double *obj;
 } fit_buffers;
 
-static int alloc_fit(fit_buffers *b, const agg_state *s, int64_t dim, int64_t passes) {
-	b->x = malloc((size_t)(s->n * dim) * sizeof(float));
-	b->tmp = malloc((size_t)(s->n * dim) * sizeof(float));
+static int alloc_fit(fit_buffers *b, const agg_state *s, int64_t dim, int64_t passes, emeans_mem *mem, char *err) {
+	size_t floats = (size_t)(s->n * dim);
+	b->x = emeans_block_alloc(mem, floats * sizeof(float), err);
+	b->tmp = b->x ? emeans_block_alloc(mem, floats * sizeof(float), err) : NULL;
+	b->labels = b->tmp ? emeans_block_alloc(mem, (size_t)s->n * sizeof(int32_t), err) : NULL;
+	if (!b->labels) {
+		return 1;
+	}
 	b->c = malloc((size_t)(s->k * dim) * sizeof(float));
-	b->labels = malloc((size_t)s->n * sizeof(int32_t));
 	b->obj = malloc((size_t)passes * sizeof(double));
-	return !b->x || !b->tmp || !b->c || !b->labels || !b->obj;
+	return !b->c || !b->obj ? emeans_error(err, "out of memory") : 0;
 }
 
 static void free_fit(fit_buffers *b) {
-	free(b->x);
-	free(b->tmp);
+	emeans_block_free(b->x);
+	emeans_block_free(b->tmp);
+	emeans_block_free(b->labels);
 	free(b->c);
-	free(b->labels);
 	free(b->obj);
 }
 
-// The points in canonical form and sorted, so the result does not depend on the order rows arrived in.
-static int fit_state(const agg_state *s, int geometry, duckdb_vector result, idx_t row, char *err) {
-	layout l = make_layout(s, geometry);
-	emeans_params p;
-	emeans_default_params(&p);
-	p.nepochs = s->nepochs;
-	p.seed = s->seed;
-	p.spherical = s->geographic;
-	p.max_work = MAX_WORK;
+static void fit_params(const agg_state *s, emeans_mem *mem, emeans_params *p) {
+	emeans_default_params(p);
+	p->nepochs = s->nepochs;
+	p->seed = s->seed;
+	p->spherical = s->geographic;
+	p->max_work = MAX_WORK;
 	// Unlike emeans() and the reference, k-means++ seeding: on 2-D maps, where the reference turns revival
 	// off, a random start left clusters up to 25% worse than PostGIS (docs/POSTGIS.md).
-	p.kmeans_plus_plus = 1;
+	p->kmeans_plus_plus = 1;
+	p->allocator = emeans_mem_allocator(mem);
+}
+
+// The points in canonical form and sorted, so the result does not depend on the order rows arrived in.
+// The sort buffer goes back before the fit, which takes its own workspace. s is pinned.
+static int fit_state(const agg_state *s, emeans_mem *mem, duckdb_vector result, idx_t row, char *err) {
+	layout l = make_layout(s, s->geometry);
+	emeans_params p;
+	fit_params(s, mem, &p);
 	emeans_recipe recipe;
 	if (emeans_resolve_recipe(s->n, s->k, l.dim, p.nepochs, p.law, 0, 0, &recipe, err)) {
 		return 1;
 	}
 	fit_buffers b = {NULL, NULL, NULL, NULL, NULL};
-	emeans_output out = {NULL, NULL, NULL, 0, recipe};
-	int rc = alloc_fit(&b, s, l.dim, recipe.n_passes) ? emeans_error(err, "out of memory") : 0;
+	int rc = alloc_fit(&b, s, l.dim, recipe.n_passes, mem, err);
 	if (rc == 0) {
-		to_matrix(s, &l, b.x);
-		emeans_sort_rows(b.x, b.tmp, s->n, l.dim);
-		out = (emeans_output) {b.c, b.labels, b.obj, 0, recipe};
-		rc = emeans_fit(b.x, s->n, l.dim, s->k, &p, &out, err) != EMEANS_OK ||
+		float *x = emeans_block_data(b.x);
+		to_matrix(s, &l, x);
+		emeans_sort_rows(x, emeans_block_data(b.tmp), s->n, l.dim);
+		emeans_block_free(b.tmp);
+		b.tmp = NULL;
+		emeans_output out = {b.c, emeans_block_data(b.labels), b.obj, 0, recipe};
+		rc = emeans_fit(x, s->n, l.dim, s->k, &p, &out, err) != EMEANS_OK ||
 		     write_result(result, row, s, &l, &out, err);
 	}
 	free_fit(&b);
@@ -382,13 +455,17 @@ static int fit_state(const agg_state *s, int geometry, duckdb_vector result, idx
 static void Finalize(duckdb_function_info info, duckdb_aggregate_state *source, duckdb_vector result, idx_t count,
                      idx_t offset) {
 	char err[EMEANS_ERR_LEN];
+	agg_state *pinned[1];
+	pin_list pins = {duckdb_aggregate_function_get_extra_info(info), pinned, 0};
 	for (idx_t i = 0; i < count; i++) {
 		agg_state *s = (agg_state *)source[i];
 		if (s->n == 0) {
 			emeans_set_struct_null(result, offset + i, N_FIELDS);
 			continue;
 		}
-		if (fit_state(s, s->geometry, result, offset + i, err)) {
+		int rc = pin_state(s, &pins, err) || fit_state(s, pins.mem, result, offset + i, err);
+		unpin_all(&pins);
+		if (rc) {
 			report(info, err);
 			return;
 		}
@@ -414,7 +491,7 @@ static duckdb_logical_type result_type(void) {
 }
 
 static bool add_overload(duckdb_aggregate_function_set set, duckdb_logical_type points, idx_t n_params,
-                         duckdb_logical_type ret) {
+                         duckdb_logical_type ret, emeans_mem *mem) {
 	duckdb_logical_type extra[3] = {duckdb_create_logical_type(DUCKDB_TYPE_BIGINT),
 	                                duckdb_create_logical_type(DUCKDB_TYPE_DOUBLE),
 	                                duckdb_create_logical_type(DUCKDB_TYPE_BIGINT)};
@@ -427,6 +504,7 @@ static bool add_overload(duckdb_aggregate_function_set set, duckdb_logical_type 
 	duckdb_aggregate_function_set_return_type(f, ret);
 	duckdb_aggregate_function_set_functions(f, StateSize, StateInit, Update, Combine, Finalize);
 	duckdb_aggregate_function_set_destructor(f, StateDestroy);
+	duckdb_aggregate_function_set_extra_info(f, mem, NULL);
 	// NULL nepochs and seed mean the defaults, so the callbacks must see NULLs.
 	duckdb_aggregate_function_set_special_handling(f);
 	bool ok = duckdb_add_aggregate_function_to_set(set, f) == DuckDBSuccess;
@@ -437,7 +515,7 @@ static bool add_overload(duckdb_aggregate_function_set set, duckdb_logical_type 
 	return ok;
 }
 
-bool emeans_register_agg(duckdb_connection connection) {
+bool emeans_register_agg(duckdb_connection connection, emeans_mem *mem) {
 	// GEOMETRY arrives as ANY: a GEOMETRY parameter would cast GEOMETRY('OGC:CRS84') to plain GEOMETRY and
 	// drop the CRS before the function could see it. ANY also takes lists of other numeric types, such as
 	// INTEGER[] literals, which Update reads like the others; anything else is an error.
@@ -448,7 +526,7 @@ bool emeans_register_agg(duckdb_connection connection) {
 	bool ok = true;
 	for (int t = 0; t < 3; t++) {
 		for (idx_t n_params = 2; n_params <= 4; n_params++) {
-			ok = ok && add_overload(set, points[t], n_params, ret);
+			ok = ok && add_overload(set, points[t], n_params, ret, mem);
 		}
 	}
 	ok = ok && duckdb_register_aggregate_function_set(connection, set) == DuckDBSuccess;

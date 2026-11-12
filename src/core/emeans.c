@@ -26,6 +26,7 @@ typedef struct {
 // Every buffer of one call, carved from one allocation (so out-of-memory has a single path).
 typedef struct {
 	void *block;
+	void *handle;         // the allocator's, for release
 	double *mass;         // N_j, k
 	double *sum;          // s_j of the current batch, k x d
 	double *pass_sum;     // sums of the closing pass, k x d
@@ -76,6 +77,7 @@ void emeans_default_params(emeans_params *p) {
 	p->on_frame = NULL;
 	p->frame_ctx = NULL;
 	p->frame_every = 0;
+	p->allocator = (emeans_allocator) {NULL, NULL, NULL};
 }
 
 //===--------------------------------------------------------------------===//
@@ -159,11 +161,37 @@ static void *carve(char **cursor, int64_t count, size_t size) {
 	return p;
 }
 
-static int workspace_alloc(run_state *s, int64_t b) {
+// The workspace's one allocation, zeroed: from params->allocator when it has one, else calloc.
+static char *workspace_block(run_state *s, double bytes, char *err) {
+	const emeans_allocator *a = &s->params->allocator;
+	if (bytes >= (double)(SIZE_MAX / 2)) {
+		emeans_error(err, "out of memory");
+		return NULL;
+	}
+	if (!a->alloc) {
+		char *p = emeans_calloc(1, (size_t)bytes);
+		if (!p) {
+			emeans_error(err, "out of memory");
+		}
+		return p;
+	}
+	char *p = a->alloc(a->ctx, (size_t)bytes, &s->ws.handle, err);
+	return p ? memset(p, 0, (size_t)bytes) : NULL;
+}
+
+static void workspace_free(run_state *s) {
+	const emeans_allocator *a = &s->params->allocator;
+	if (a->alloc) {
+		a->release(a->ctx, s->ws.handle);
+	} else {
+		free(s->ws.block);
+	}
+}
+
+static int workspace_alloc(run_state *s, int64_t b, char *err) {
 	workspace *ws = &s->ws;
 	int64_t n = s->n, d = s->d, k = s->k;
-	double bytes = workspace_bytes(s, b);
-	char *cursor = bytes < (double)(SIZE_MAX / 2) ? emeans_calloc(1, (size_t)bytes) : NULL;
+	char *cursor = workspace_block(s, workspace_bytes(s, b), err);
 	ws->block = cursor;
 	if (!cursor) {
 		return 1;
@@ -567,12 +595,11 @@ int emeans_fit(const float *x, int64_t n, int64_t d, int64_t k, const emeans_par
 	if (rc != EMEANS_OK) {
 		return rc;
 	}
-	if (workspace_alloc(&s, s.recipe.batch_size)) {
-		emeans_error(err, "out of memory");
+	if (workspace_alloc(&s, s.recipe.batch_size, err)) {
 		return EMEANS_OOM;
 	}
 	run(&s, p);
-	free(s.ws.block);
+	workspace_free(&s);
 	out->recipe = s.recipe;
 	return EMEANS_OK;
 }

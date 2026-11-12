@@ -126,6 +126,14 @@ A call splits a large batch across up to `emeans_threads` threads (default 0, me
 setting). Small calls, such as one per group in a `GROUP BY`, stay on one thread. The result does not
 depend on the thread count.
 
+The large buffers come from DuckDB's buffer manager: the float copy of the input, the fit's workspace,
+and `emeans_agg`'s points. They count against `memory_limit`. Between calls, an aggregate's points can
+be written to `temp_directory` when they do not fit. A query that needs more than the limit at once
+fails with DuckDB's out-of-memory error. In one test, 2,000 groups of 50,000 2-D points (1.6 GB of
+aggregate state) ran under `memory_limit = '500MB'` at a peak RSS of 730–910 MB, against 2.9 GB for the
+earlier malloc build, and took about 40% longer for the spilling. A single fit still needs its whole
+input in memory, as float32 (n × d × 4 bytes), plus about 16 bytes per row of workspace.
+
 ## Building
 
 ```sh

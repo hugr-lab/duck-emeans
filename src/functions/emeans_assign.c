@@ -176,7 +176,7 @@ typedef struct {
 static bool add_overload(duckdb_scalar_function_set set, const assign_variant *v, duckdb_type element,
                          duckdb_logical_type ret) {
 	duckdb_logical_type params[2] = {emeans_list_type(element), emeans_matrix_type(element)};
-	bool ok = emeans_add_overload(set, v->name, params, 2, ret, v->fn, NULL);
+	bool ok = emeans_add_overload(set, v->name, params, 2, ret, v->fn, NULL, NULL);
 	duckdb_destroy_logical_type(&params[0]);
 	duckdb_destroy_logical_type(&params[1]);
 	return ok;
@@ -190,7 +190,7 @@ static bool register_point(duckdb_connection connection) {
 	                                 emeans_matrix_type(DUCKDB_TYPE_DOUBLE)};
 	duckdb_logical_type ret = result_type("distance");
 	duckdb_scalar_function_set set = duckdb_create_scalar_function_set("emeans_assign_point");
-	bool ok = emeans_add_overload(set, "emeans_assign_point", params, 2, ret, emeans_assign_geometry, NULL) &&
+	bool ok = emeans_add_overload(set, "emeans_assign_point", params, 2, ret, emeans_assign_geometry, NULL, NULL) &&
 	          duckdb_register_scalar_function_set(connection, set) == DuckDBSuccess;
 	duckdb_destroy_scalar_function_set(&set);
 	duckdb_destroy_logical_type(&ret);
@@ -209,7 +209,8 @@ static bool register_variant(duckdb_connection connection, const assign_variant 
 	return ok;
 }
 
-bool emeans_register_assign(duckdb_connection connection) {
+bool emeans_register_assign(duckdb_connection connection, emeans_mem *mem) {
+	(void)mem;
 	static const assign_variant euclidean = {"emeans_assign", "sq_distance", AssignFunction};
 	static const assign_variant spherical = {"emeans_assign_spherical", "similarity", AssignSphericalFunction};
 	return register_variant(connection, &euclidean) && register_variant(connection, &spherical) &&

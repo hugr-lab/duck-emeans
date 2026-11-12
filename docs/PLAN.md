@@ -109,7 +109,11 @@ Stages, each with every SQL test passing:
    include a shim `duckdb_extension.h`, so their calls bind to the C API inside DuckDB. The CRAP gate
    takes its SQL coverage from a DuckDB build with only the extension instrumented, so it scores the
    C++ as well as the C. The C API build stays available (`make -f Makefile.capi`) until stage 4.
-2. Spilling memory: the input copy and the aggregate's points in `BufferManager` blocks.
+2. Spilling memory (done): the input copy, the fit's workspace and the aggregate's points in
+   `BufferManager` blocks (`src/include/emeans_mem.h`, `src/cpp/emeans_mem.cpp`). An aggregate state's
+   block is pinned only inside a callback, so between callbacks it can go to `temp_directory`.
+   `test/sql/emeans_memory.test` runs a `GROUP BY` whose states exceed `memory_limit` and checks that a
+   block above the limit fails with DuckDB's error.
 3. `emeans_cluster_id(geom, k) OVER (...)`, the per-row id in one call, compared again with PostGIS.
 4. Native C++ for the remaining functions, removing the ANY parameter, the thread shim and the C API
    build; `FLOAT[d]` output; interrupts.
@@ -122,6 +126,9 @@ docs/QDRANT.md for how such an index compares).
 - Speed against FAISS: settled on macOS (docs/BENCHMARK.md). On Linux the portable kernel has not been
   measured against FAISS with OpenBLAS or MKL.
 - Memory: the `list(embedding)` path holds the data once in DuckDB and once as float32 in the
-  function; 10M × 128 is 10 GB + 5 GB.
+  function; 10M × 128 is 10 GB + 5 GB. Since stage 2 the float32 copy is counted against
+  `memory_limit`, but it is pinned for the whole fit, so it cannot spill. The window operator also
+  keeps a partition's rows pinned, so `emeans_agg(...) OVER (PARTITION BY ...)` does not spill as the
+  `GROUP BY` form does.
 - Reference drift: blog, abstract and code disagree on the speed-up figures and on the scaling-law
   coefficients. Pin the FAISS commit the tests compare against.

@@ -10,6 +10,7 @@
 
 #include "recipe.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
 #define EMEANS_OK 0
@@ -27,6 +28,15 @@ typedef struct {
 } emeans_frame;
 
 typedef void (*emeans_frame_fn)(void *ctx, const emeans_frame *frame);
+
+// Where emeans_fit's workspace comes from. alloc returns `bytes` bytes and sets *handle, which release
+// later gets, or returns NULL with a message in err (EMEANS_ERR_LEN bytes). A NULL alloc means calloc.
+// The SQL functions pass DuckDB's buffer manager (emeans_mem.h).
+typedef struct {
+	void *(*alloc)(void *ctx, size_t bytes, void **handle, char *err);
+	void (*release)(void *ctx, void *handle);
+	void *ctx;
+} emeans_allocator;
 
 typedef struct {
 	double nepochs;          // passes over the data, fractional allowed (default 5)
@@ -46,6 +56,7 @@ typedef struct {
 	emeans_frame_fn on_frame; // called before the first step, every frame_every steps, and after closing
 	void *frame_ctx;
 	int64_t frame_every;     // 0 (default): only the first and the final frame
+	emeans_allocator allocator; // the workspace's; zeroed (default) for calloc
 } emeans_params;
 
 void emeans_default_params(emeans_params *p);

@@ -13,6 +13,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
 
 extern "C" {
 #include "emeans_functions.h"
@@ -20,9 +21,12 @@ extern "C" {
 
 namespace duckdb {
 
+// The functions take their large buffers from the database's buffer manager (src/cpp/emeans_mem.cpp).
 static void LoadInternal(ExtensionLoader &loader) {
-	Connection connection(loader.GetDatabaseInstance());
-	if (!emeans_register_all(reinterpret_cast<duckdb_connection>(&connection))) {
+	auto &db = loader.GetDatabaseInstance();
+	Connection connection(db);
+	auto mem = reinterpret_cast<emeans_mem *>(&BufferManager::GetBufferManager(db));
+	if (!emeans_register_all(reinterpret_cast<duckdb_connection>(&connection), mem)) {
 		throw InternalException("emeans: failed to register functions");
 	}
 }
