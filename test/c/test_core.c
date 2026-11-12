@@ -737,6 +737,53 @@ static void test_sort_rows(void) {
 	CHECK(three[0] == 1 && three[1] == 2 && three[2] == 3, "three rows");
 }
 
+//===--------------------------------------------------------------------===//
+// k-means++ seeding
+//===--------------------------------------------------------------------===//
+
+static void test_kmeans_plus_plus(void) {
+	// Nine points near 0 and one at 100 (x axis), k = 2, one pass of one batch with alpha0 = 1 so the
+	// result is one Lloyd step from the seeds. Whichever point seeds first, the second seed is drawn with
+	// weight proportional to squared distance: from a seed near 0 the point at 100 carries
+	// 100^2 / (100^2 + sum of the others' squares <= 9 * 0.8^2) > 99.9% of the weight. So for every seed the
+	// clusters are {near 0} and {100}: centroids 0.4 and 100.
+	float x[20];
+	for (int i = 0; i < 9; i++) {
+		x[2 * i] = 0.1f * (float)i;
+		x[2 * i + 1] = 0;
+	}
+	x[18] = 100;
+	x[19] = 0;
+	emeans_params p;
+	emeans_default_params(&p);
+	p.kmeans_plus_plus = 1;
+	p.nepochs = 1;
+	p.batch_size = 10;
+	p.alpha0 = 1;
+	int separated = 0;
+	for (uint32_t seed = 0; seed < 20; seed++) {
+		fit_result r;
+		p.seed = seed;
+		CHECK(fit(x, 10, 2, 2, &p, &r) == EMEANS_OK, "%s", r.err);
+		float lo = fminf(r.centroids[0], r.centroids[2]), hi = fmaxf(r.centroids[0], r.centroids[2]);
+		separated += fabsf(lo - 0.4f) < 1e-5f && hi == 100.0f;
+	}
+	CHECK(separated == 20, "k-means++ separated the far point for %d of 20 seeds", separated);
+	// Identical points: every distance is 0 after the first seed, and the draw falls back to uniform.
+	float same[8] = {5, 5, 5, 5, 5, 5, 5, 5};
+	fit_result r;
+	p.seed = 1;
+	p.batch_size = 0;
+	p.alpha0 = 0;
+	CHECK(fit(same, 4, 2, 3, &p, &r) == EMEANS_OK && r.centroids[0] == 5 && r.centroids[4] == 5, "identical points");
+	// k-means++ counts one more pass in the work limit: 10 rows x k 2 x d 2 = 40 for seeding, 40 for the pass.
+	p.seed = 0;
+	p.max_work = 79;
+	CHECK(fit(x, 10, 2, 2, &p, &r) == EMEANS_BUDGET_EXCEEDED, "budget counts the seeding pass");
+	p.max_work = 80;
+	CHECK(fit(x, 10, 2, 2, &p, &r) == EMEANS_OK, "%s", r.err);
+}
+
 int main(void) {
 	test_round_pow2();
 	test_passes();
@@ -762,6 +809,7 @@ int main(void) {
 	test_wkb_points();
 	test_sphere();
 	test_sort_rows();
+	test_kmeans_plus_plus();
 	test_normalize();
 	test_fit_spherical();
 	if (failures) {

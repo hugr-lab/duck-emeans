@@ -35,7 +35,8 @@ typedef struct {
 	int64_t batch_size;      // > 0 overrides the batch law
 	double alpha0;           // > 0 overrides the step law
 	double unused_threshold; // tau for revival; < 0 (default) means 0.1 above d = 2 and 0 (off) otherwise
-	const float *init;       // k x d initial centroids, or NULL (default) for k distinct random rows
+	const float *init;       // k x d initial centroids, or NULL (default) to choose them from the rows
+	int kmeans_plus_plus;    // choose them by k-means++ seeding rather than at random (default 0)
 	double max_work;         // limit on rows x k x d summed over all passes; 0 (default) = none
 	int spherical;           // assign by the largest inner product with the centroid directions (default 0)
 	int threads;             // threads for the assignment of a large batch (default 1); the result does not

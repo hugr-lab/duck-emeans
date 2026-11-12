@@ -358,6 +358,9 @@ static int fit_state(const agg_state *s, int geometry, duckdb_vector result, idx
 	p.seed = s->seed;
 	p.spherical = s->geographic;
 	p.max_work = MAX_WORK;
+	// Unlike emeans() and the reference, k-means++ seeding: on 2-D maps, where the reference turns revival
+	// off, a random start left clusters up to 25% worse than PostGIS (docs/POSTGIS.md).
+	p.kmeans_plus_plus = 1;
 	emeans_recipe recipe;
 	if (emeans_resolve_recipe(s->n, s->k, l.dim, p.nepochs, p.law, 0, 0, &recipe, err)) {
 		return 1;
