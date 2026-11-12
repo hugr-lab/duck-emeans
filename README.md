@@ -53,7 +53,9 @@ Against faiss-cpu's `NumpyEmeans` on Gaussian mixtures (n = 100,000, k = 256, 2 
 objective is within 0.5% (−0.43% at d = 16, +0.38% at d = 128, −0.30% spherical), both beat Lloyd at 25
 iterations, and the recipe matches for 220 shapes. On an Apple M5 Pro, `emeans()` clusters a million
 128-d vectors into 256 clusters in 1.23 s on 18 threads (2.44 s on one), against 2.52 s for FAISS; on
-macOS it uses Accelerate for the dot products. See [docs/BENCHMARK.md](docs/BENCHMARK.md).
+macOS it uses Accelerate for the dot products. For embedding-sized vectors (100,000 of d = 768 or 1536)
+it takes 0.67 s and 1.48 s, against 1.26 s and 2.48 s for FAISS's e-means, at the same objective. See
+[docs/BENCHMARK.md](docs/BENCHMARK.md).
 
 ## Limits
 
