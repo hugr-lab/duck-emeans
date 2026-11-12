@@ -1,4 +1,4 @@
-.PHONY: clean clean_all test_core test_threads crap compare_faiss bench compare_postgis help
+.PHONY: clean clean_all test_core test_threads crap compare_faiss bench compare_postgis compare_qdrant help
 
 PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
@@ -73,6 +73,14 @@ compare_postgis: release
 	uv run --quiet --no-project --python 3.12 --with duckdb==2.0.0 --with numpy==2.3.4 \
 		--with "psycopg[binary]==3.2.10" --with matplotlib==3.10.7 python -I bench/compare_postgis.py \
 		build/release/$(EXTENSION_NAME).duckdb_extension "$(POSTGIS_DSN)" docs/postgis_comparison.png
+
+# Nearest-neighbour search against DuckDB's HNSW (vss) and Qdrant; see docs/QDRANT.md. Needs a running
+# Qdrant on 127.0.0.1:16333/16334 and the data set's Parquet files in QDRANT_DATA.
+QDRANT_DATA ?= qdrant-data
+compare_qdrant: release
+	uv run --quiet --no-project --python 3.12 --with duckdb==2.0.0 --with numpy==2.3.4 --with pyarrow==22.0.0 \
+		--with qdrant-client==1.20.0 python -I bench/compare_qdrant.py build/release/$(EXTENSION_NAME).duckdb_extension \
+		"$(QDRANT_DATA)/*.parquet" build
 
 # CRAP score of every C function in src/ (complexity from lizard, coverage from llvm-cov over test_core,
 # test_threads and the SQL tests). Exit 2 when any function scores CRAP >= 10.
