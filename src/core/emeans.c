@@ -35,12 +35,16 @@ typedef struct {
 	int32_t *batch_label; // B
 	int32_t *touched;     // clusters with n_j > 0 in the current batch, k
 	int32_t *targets;     // dead clusters at a revival, k
+	float *unit;          // spherical: the centroid directions, k x d
+	float *scratch;       // the kernel's block of dot products
+	emeans_kernel kernel; // ct (d x k) and bias (k) of the assignment centroids
 } workspace;
 
 typedef struct {
 	const float *x;
 	int64_t n, d, k;
 	uint32_t seed;
+	int spherical;
 	emeans_recipe recipe;
 	emeans_output *out;
 	workspace ws;
@@ -58,6 +62,7 @@ void emeans_default_params(emeans_params *p) {
 	p->unused_threshold = -1;
 	p->init = NULL;
 	p->max_work = 0;
+	p->spherical = 0;
 }
 
 //===--------------------------------------------------------------------===//
@@ -130,7 +135,8 @@ static int prepare(run_state *s, const emeans_params *p, char *err) {
 static double workspace_bytes(int64_t n, int64_t d, int64_t k, int64_t b) {
 	double kd = (double)k * (double)d;
 	return 8.0 * (2.0 * kd + (double)k + (double)b) + 8.0 * (2.0 * (double)k + (double)n) +
-	       (double)sizeof(donor_key) * (double)k + 4.0 * ((double)b + 2.0 * (double)k);
+	       (double)sizeof(donor_key) * (double)k + 4.0 * ((double)b + 2.0 * (double)k) +
+	       4.0 * (3.0 * kd + (double)k + EMEANS_KERNEL_SCRATCH);
 }
 
 static void *carve(char **cursor, int64_t count, size_t size) {
@@ -157,12 +163,41 @@ static int workspace_alloc(workspace *ws, int64_t n, int64_t d, int64_t k, int64
 	ws->batch_label = carve(&cursor, b, sizeof(int32_t));
 	ws->touched = carve(&cursor, k, sizeof(int32_t));
 	ws->targets = carve(&cursor, k, sizeof(int32_t));
+	ws->unit = carve(&cursor, k * d, sizeof(float));
+	ws->scratch = carve(&cursor, EMEANS_KERNEL_SCRATCH, sizeof(float));
+	ws->kernel.ct = carve(&cursor, k * d, sizeof(float));
+	ws->kernel.bias = carve(&cursor, k, sizeof(float));
+	ws->kernel.k = k;
+	ws->kernel.d = d;
 	return 0;
 }
 
 //===--------------------------------------------------------------------===//
 // One batch: assign, accumulate, EMA update
 //===--------------------------------------------------------------------===//
+
+// The kernel's copy of centroid j: the centroid itself, or (spherical) its direction.
+static void refresh(run_state *s, int64_t j) {
+	const float *c = s->out->centroids + j * s->d;
+	if (s->spherical) {
+		float *u = s->ws.unit + j * s->d;
+		emeans_normalize(c, u, s->d);
+		c = u;
+	}
+	emeans_kernel_set(&s->ws.kernel, j, c);
+}
+
+// Labels from the kernel; each distance recomputed exactly for the centroid chosen.
+static void assign_batch(run_state *s, const int64_t *rows, int64_t count) {
+	workspace *ws = &s->ws;
+	emeans_kernel_nearest(&ws->kernel, s->x, rows, count, ws->batch_label, ws->scratch);
+	for (int64_t i = 0; i < count; i++) {
+		const float *row = s->x + rows[i] * s->d;
+		int64_t j = ws->batch_label[i];
+		ws->batch_dist[i] = s->spherical ? 2.0 - 2.0 * emeans_dot(row, ws->unit + j * s->d, s->d)
+		                                 : emeans_sq_dist(row, s->out->centroids + j * s->d, s->d);
+	}
+}
 
 static void add_row(double *sum, const float *row, int64_t d) {
 	for (int64_t t = 0; t < d; t++) {
@@ -220,6 +255,7 @@ static void update(run_state *s, double alpha) {
 		double nj = (double)ws->count[j];
 		ws->mass[j] += alpha * nj;
 		move_centroid(s->out->centroids + j * s->d, ws->sum + j * s->d, s->d, alpha * nj / ws->mass[j], nj);
+		refresh(s, j);
 		ws->count[j] = 0;
 	}
 	s->n_touched = 0;
@@ -290,6 +326,8 @@ static void split(run_state *s, int64_t src, int64_t dst, int64_t pair) {
 	if (cs[0] == ct[0]) {
 		ct[0] = nextafterf(ct[0], INFINITY);
 	}
+	refresh(s, src);
+	refresh(s, dst);
 }
 
 static void revive(run_state *s) {
@@ -315,7 +353,7 @@ static void revive(run_state *s) {
 //===--------------------------------------------------------------------===//
 
 static double run_batch(run_state *s, const int64_t *rows, int64_t count, int closing) {
-	emeans_assign(s->x, s->d, rows, count, s->out->centroids, s->k, s->ws.batch_label, s->ws.batch_dist);
+	assign_batch(s, rows, count);
 	double obj = accumulate(s, rows, count);
 	if (closing) {
 		record_closing(s, rows, count);
@@ -355,8 +393,13 @@ static void init_centroids(run_state *s, const float *init) {
 }
 
 static void init_state(run_state *s) {
+	s->ws.kernel.inner_product = s->spherical;
 	for (int64_t j = 0; j < s->k; j++) {
 		s->ws.mass[j] = INIT_MASS;
+		if (s->spherical) {
+			emeans_normalize(s->out->centroids + j * s->d, s->out->centroids + j * s->d, s->d);
+		}
+		refresh(s, j);
 	}
 	for (int64_t i = 0; i < s->n; i++) {
 		s->out->labels[i] = -1;
@@ -365,12 +408,17 @@ static void init_state(run_state *s) {
 	emeans_rng_seed(&s->revive_rng, s->seed, REVIVE_STREAM);
 }
 
-// Every centroid that was assigned rows in the closing pass becomes their exact mean.
+// Every centroid that was assigned rows in the closing pass becomes their exact mean; spherical centroids,
+// assigned or not, then become directions.
 static void close_centroids(run_state *s) {
 	workspace *ws = &s->ws;
 	for (int64_t j = 0; j < s->k; j++) {
+		float *c = s->out->centroids + j * s->d;
 		for (int64_t t = 0; ws->pass_count[j] > 0 && t < s->d; t++) {
-			s->out->centroids[j * s->d + t] = (float)(ws->pass_sum[j * s->d + t] / (double)ws->pass_count[j]);
+			c[t] = (float)(ws->pass_sum[j * s->d + t] / (double)ws->pass_count[j]);
+		}
+		if (s->spherical) {
+			emeans_normalize(c, c, s->d);
 		}
 	}
 }
@@ -390,7 +438,7 @@ int emeans_fit(const float *x, int64_t n, int64_t d, int64_t k, const emeans_par
 	if (!x || !p || !out) {
 		return emeans_error(err, "x, params and output must not be NULL");
 	}
-	run_state s = {.x = x, .n = n, .d = d, .k = k, .seed = p->seed, .out = out};
+	run_state s = {.x = x, .n = n, .d = d, .k = k, .seed = p->seed, .spherical = p->spherical != 0, .out = out};
 	int rc = prepare(&s, p, err);
 	if (rc != EMEANS_OK) {
 		return rc;

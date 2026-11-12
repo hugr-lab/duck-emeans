@@ -16,6 +16,8 @@ typedef struct {
 	size_t cap; // floats
 } emeans_buffer;
 
+// Grows b to hold at least count floats. Returns 0, or 1 with "out of memory" in err.
+int emeans_buffer_reserve(emeans_buffer *b, size_t count, char *err);
 void emeans_buffer_free(emeans_buffer *b);
 
 bool emeans_row_is_valid(duckdb_vector vec, idx_t row);

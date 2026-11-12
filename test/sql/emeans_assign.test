@@ -42,6 +42,30 @@ SELECT i, (emeans_assign(v, [[0, 0], [4, 0]]::FLOAT[][])).label FROM pts ORDER B
 4	2
 5	2
 
+# Centroids that change from row to row: a row reuses the previous row's prepared centroids only when it
+# points at the same list, so rows 3 and 5, with the order reversed, get label 2.
+query II
+SELECT i, (emeans_assign([1, 1], c)).label
+FROM (VALUES (1, [[0, 0], [10, 10]]), (2, [[0, 0], [10, 10]]), (3, [[10, 10], [0, 0]]), (4, [[0, 0], [10, 10]]),
+             (5, [[10, 10], [0, 0]])) t(i, c)
+ORDER BY i
+----
+1	1
+2	1
+3	2
+4	1
+5	2
+
+# The same centroids for every row, as a scalar subquery and as a one-row cross join.
+statement ok
+CREATE TABLE cents AS SELECT [[0, 0], [4, 0]]::FLOAT[][] AS c;
+
+query II
+SELECT list(a.label ORDER BY i), list(b.label ORDER BY i)
+FROM (SELECT i, emeans_assign(v, (SELECT c FROM cents)) AS a, emeans_assign(v, cents.c) AS b FROM pts, cents)
+----
+[1, 1, 1, 2, 2, 2]	[1, 1, 1, 2, 2, 2]
+
 # NULL in either argument gives NULL, and NULL rows survive materialisation.
 statement ok
 CREATE TABLE assigned AS

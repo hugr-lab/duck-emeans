@@ -1,5 +1,7 @@
 // emeans(x, k [, nepochs [, seed]]) -> STRUCT(centroids FLOAT[][], labels INTEGER[], obj DOUBLE[],
 //                                            batch_size BIGINT, alpha0 DOUBLE, n_splits BIGINT)
+// emeans_spherical(x, k [, nepochs [, seed]]) -> the same, for unit-length vectors: assignment by the
+// largest inner product with the centroid directions, unit centroids, obj the sum of 2 - 2 x.c.
 //
 // Clusters the vectors in x (LIST(LIST(FLOAT)) or LIST(LIST(DOUBLE)), one list per row, typically built
 // with list(embedding ORDER BY id)) into k clusters. labels are 1-based, so centroids[labels[i]] is row
@@ -94,9 +96,16 @@ static void *arg_data(duckdb_data_chunk input, idx_t col) {
 	return duckdb_vector_get_data(duckdb_data_chunk_get_vector(input, col));
 }
 
-static int read_params(duckdb_data_chunk input, idx_t row, double max_work, emeans_params *p, char *err) {
+typedef struct {
+	double max_work;
+	int spherical;
+	const char *name;
+} cluster_mode;
+
+static int read_params(duckdb_data_chunk input, idx_t row, const cluster_mode *mode, emeans_params *p, char *err) {
 	emeans_default_params(p);
-	p->max_work = max_work;
+	p->max_work = mode->max_work;
+	p->spherical = mode->spherical;
 	if (arg_present(input, 2, row)) {
 		p->nepochs = ((const double *)arg_data(input, 2))[row];
 	}
@@ -172,31 +181,32 @@ static int fit_row(const float *x, int64_t n, int64_t d, int64_t k, const emeans
 	return rc;
 }
 
-static int cluster_row(duckdb_data_chunk input, idx_t row, double max_work, duckdb_vector output, emeans_buffer *x,
-                       char *err) {
+static int cluster_row(duckdb_data_chunk input, idx_t row, const cluster_mode *mode, duckdb_vector output,
+                       emeans_buffer *x, char *err) {
 	if (!arg_present(input, 0, row) || !arg_present(input, 1, row)) {
 		return ROW_NULL;
 	}
 	int64_t n, d;
 	emeans_params p;
 	if (emeans_read_matrix(duckdb_data_chunk_get_vector(input, 0), row, "x", x, &n, &d, err) ||
-	    read_params(input, row, max_work, &p, err)) {
+	    read_params(input, row, mode, &p, err)) {
 		return ROW_ERROR;
 	}
 	int64_t k = ((const int64_t *)arg_data(input, 1))[row];
 	return fit_row(x->data, n, d, k, &p, output, row, err) ? ROW_ERROR : ROW_OK;
 }
 
-static void ClusterFunction(duckdb_function_info info, duckdb_data_chunk input, duckdb_vector output) {
+static void cluster_chunk(duckdb_function_info info, duckdb_data_chunk input, duckdb_vector output, int spherical) {
 	idx_t count = duckdb_data_chunk_get_size(input);
-	double max_work = *(const double *)duckdb_scalar_function_get_bind_data(info);
+	cluster_mode mode = {*(const double *)duckdb_scalar_function_get_bind_data(info), spherical,
+	                     spherical ? "emeans_spherical" : "emeans"};
 	emeans_buffer x = {NULL, 0};
 	char err[EMEANS_ERR_LEN];
 	for (idx_t row = 0; row < count; row++) {
-		int rc = cluster_row(input, row, max_work, output, &x, err);
+		int rc = cluster_row(input, row, &mode, output, &x, err);
 		if (rc == ROW_ERROR) {
-			char msg[EMEANS_ERR_LEN + 16];
-			snprintf(msg, sizeof(msg), "emeans: %s", err);
+			char msg[EMEANS_ERR_LEN + 32];
+			snprintf(msg, sizeof(msg), "%s: %s", mode.name, err);
 			duckdb_scalar_function_set_error(info, msg);
 			break;
 		}
@@ -205,6 +215,14 @@ static void ClusterFunction(duckdb_function_info info, duckdb_data_chunk input, 
 		}
 	}
 	emeans_buffer_free(&x);
+}
+
+static void ClusterFunction(duckdb_function_info info, duckdb_data_chunk input, duckdb_vector output) {
+	cluster_chunk(info, input, output, 0);
+}
+
+static void SphericalFunction(duckdb_function_info info, duckdb_data_chunk input, duckdb_vector output) {
+	cluster_chunk(info, input, output, 1);
 }
 
 //===--------------------------------------------------------------------===//
@@ -224,14 +242,15 @@ static duckdb_logical_type result_type(void) {
 	return type;
 }
 
-// emeans(x, k), emeans(x, k, nepochs) and emeans(x, k, nepochs, seed) for one element type.
-static bool add_overloads(duckdb_scalar_function_set set, duckdb_type element, duckdb_logical_type ret) {
+// name(x, k), name(x, k, nepochs) and name(x, k, nepochs, seed) for one element type.
+static bool add_overloads(duckdb_scalar_function_set set, const char *name, duckdb_scalar_function_t fn,
+                          duckdb_type element, duckdb_logical_type ret) {
 	duckdb_logical_type params[4] = {emeans_matrix_type(element), duckdb_create_logical_type(DUCKDB_TYPE_BIGINT),
 	                                 duckdb_create_logical_type(DUCKDB_TYPE_DOUBLE),
 	                                 duckdb_create_logical_type(DUCKDB_TYPE_BIGINT)};
 	bool ok = true;
 	for (idx_t n_params = 2; n_params <= 4; n_params++) {
-		ok = ok && emeans_add_overload(set, "emeans", params, n_params, ret, ClusterFunction, BindMaxWork);
+		ok = ok && emeans_add_overload(set, name, params, n_params, ret, fn, BindMaxWork);
 	}
 	for (int i = 0; i < 4; i++) {
 		duckdb_destroy_logical_type(&params[i]);
@@ -239,12 +258,18 @@ static bool add_overloads(duckdb_scalar_function_set set, duckdb_type element, d
 	return ok;
 }
 
-bool emeans_register_cluster(duckdb_connection connection) {
+static bool register_set(duckdb_connection connection, const char *name, duckdb_scalar_function_t fn) {
 	duckdb_logical_type ret = result_type();
-	duckdb_scalar_function_set set = duckdb_create_scalar_function_set("emeans");
-	bool ok = add_overloads(set, DUCKDB_TYPE_FLOAT, ret) && add_overloads(set, DUCKDB_TYPE_DOUBLE, ret) &&
+	duckdb_scalar_function_set set = duckdb_create_scalar_function_set(name);
+	bool ok = add_overloads(set, name, fn, DUCKDB_TYPE_FLOAT, ret) &&
+	          add_overloads(set, name, fn, DUCKDB_TYPE_DOUBLE, ret) &&
 	          duckdb_register_scalar_function_set(connection, set) == DuckDBSuccess;
 	duckdb_destroy_scalar_function_set(&set);
 	duckdb_destroy_logical_type(&ret);
 	return ok;
+}
+
+bool emeans_register_cluster(duckdb_connection connection) {
+	return register_set(connection, "emeans", ClusterFunction) &&
+	       register_set(connection, "emeans_spherical", SphericalFunction);
 }

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A blocked distance kernel (8 rows × 256 centroids, centroids transposed, vectorised by the compiler),
+  with the chosen centroid's distance recomputed exactly: `emeans()` is 2.3× to 5.4× faster (6.3 s for a
+  million 128-d vectors into 256 clusters, was 33.8 s).
+- `emeans_spherical()` and `emeans_assign_spherical()`: the cosine variant of the reference, for unit
+  vectors; within 0.3% of `NumpyEmeans(spherical=True)`.
+- `emeans_assign` prepares the centroids once per distinct list in a chunk, so constant centroids (a
+  literal, parameter, scalar subquery or one-row cross join) cost once per 2048 rows: 0.4 s for 100,000
+  rows against 256 × 128 centroids, was 4.7 s.
 - Validation against faiss-cpu 1.16.0 (`make compare_faiss`, also in CI): the recipe matches for 220
   shapes, the final objective is within 1% of `NumpyEmeans` (−0.43% at d = 16, +0.36% at d = 128), and
   `emeans_assign` agrees with `faiss.knn`. Benchmark (`make bench`) in docs/BENCHMARK.md.

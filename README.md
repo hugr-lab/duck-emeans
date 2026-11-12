@@ -10,20 +10,25 @@ It is written in C11 on the stable DuckDB C extension API and built for DuckDB 2
 
 ## Status
 
-Phases 1 to 4 of [the plan](docs/PLAN.md) are done: the C core, the SQL functions below, and validation
-against the reference implementation in faiss-cpu. Still to come: a faster distance kernel, the cosine
-variant, and a browser demo.
+Phases 1 to 5 of [the plan](docs/PLAN.md) are done: the C core with a vectorised distance kernel, the SQL
+functions below with a cosine variant, and validation against the reference implementation in faiss-cpu.
+Still to come: a browser demo and the community-extension submission.
 
 | Function | Returns |
 |---|---|
 | `emeans(vectors, k [, nepochs [, seed]])` | `STRUCT(centroids FLOAT[][], labels INTEGER[], obj DOUBLE[], batch_size, alpha0, n_splits)` |
 | `emeans_assign(vector, centroids)` | `STRUCT(label INTEGER, sq_distance DOUBLE)`, the nearest centroid |
+| `emeans_spherical(vectors, k [, nepochs [, seed]])` | as `emeans`, for unit vectors: by direction, unit centroids |
+| `emeans_assign_spherical(vector, centroids)` | `STRUCT(label INTEGER, similarity DOUBLE)`, the closest direction |
 | `emeans_recipe(n, k, d, nepochs [, batch_law])` | the batch size, step, law, passes and steps e-means would use |
 
 `vectors` is a list of equal-length vectors, as `FLOAT[]`, `DOUBLE[]`, integer lists or fixed-size arrays
 such as `FLOAT[384]`; build it with `list(embedding ORDER BY id)`. Labels are 1-based, so
 `centroids[labels[i]]` is row i's centroid, and they are the assignments of the last pass. `nepochs`
-defaults to 5 and `seed` to 1234; the same seed gives the same result.
+defaults to 5 and `seed` to 1234; the same seed gives the same result. The spherical functions assign by
+the largest inner product with the centroid directions, for embeddings compared by cosine similarity;
+like the reference they do not normalise the vectors, so pass unit vectors. Centroids come back as
+`FLOAT[][]`; cast them to `FLOAT[384][]` if you need the array type.
 
 ```sql
 LOAD emeans;
@@ -40,9 +45,10 @@ FROM chunks c JOIN topics t USING (doc_id);
 ## How it compares
 
 Against faiss-cpu's `NumpyEmeans` on Gaussian mixtures (n = 100,000, k = 256, 2 epochs), the final
-objective is within 0.5% (−0.43% at d = 16, +0.36% at d = 128), both beat Lloyd at 25 iterations, and
-the recipe matches for 220 shapes. Speed is the gap: the distances are a plain C loop, 2.5× slower than
-FAISS at d = 16 and 13× at d = 128, where FAISS uses BLAS. See [docs/BENCHMARK.md](docs/BENCHMARK.md).
+objective is within 0.5% (−0.43% at d = 16, +0.38% at d = 128, −0.30% spherical), both beat Lloyd at 25
+iterations, and the recipe matches for 220 shapes. `emeans()` takes 1.1× to 2.5× FAISS's time on one
+DuckDB thread (6.3 s for a million 128-d vectors into 256 clusters); FAISS uses BLAS on the Apple matrix
+units. See [docs/BENCHMARK.md](docs/BENCHMARK.md).
 
 ## Limits
 

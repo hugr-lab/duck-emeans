@@ -15,7 +15,7 @@ void emeans_buffer_free(emeans_buffer *b) {
 	b->cap = 0;
 }
 
-static int buffer_reserve(emeans_buffer *b, size_t count, char *err) {
+int emeans_buffer_reserve(emeans_buffer *b, size_t count, char *err) {
 	if (count <= b->cap) {
 		return 0;
 	}
@@ -124,7 +124,7 @@ int emeans_read_matrix(duckdb_vector outer, idx_t row, const char *what, emeans_
 		snprintf(err, EMEANS_ERR_LEN, "%s has no vectors", what);
 		return 1;
 	}
-	if (first_length(inner, e.offset, what, d, err) || buffer_reserve(buf, (size_t)(*n * *d), err)) {
+	if (first_length(inner, e.offset, what, d, err) || emeans_buffer_reserve(buf, (size_t)(*n * *d), err)) {
 		return 1;
 	}
 	for (int64_t i = 0; i < *n; i++) {
@@ -140,7 +140,7 @@ int emeans_read_vector(duckdb_vector vec, idx_t row, emeans_buffer *buf, int64_t
 	if (*d == 0) {
 		return emeans_error(err, "the vector is empty");
 	}
-	if (buffer_reserve(buf, (size_t)*d, err)) {
+	if (emeans_buffer_reserve(buf, (size_t)*d, err)) {
 		return 1;
 	}
 	return read_one(vec, row, *d, buf->data, 1, err);

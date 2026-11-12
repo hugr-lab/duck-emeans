@@ -38,8 +38,9 @@ Use `rtk` as a command prefix in this environment (see the user's global instruc
 ## Where things are
 
 - `src/core/recipe.c`: scaling laws, pass schedule, cosine step schedule. `rng.c`: PCG32 and the partial
-  shuffle. `assign.c`: exact nearest centroid. `emeans.c`: the loop, revival and closing (`emeans_fit`),
-  one allocation per call.
+  shuffle. `assign.c`: the blocked kernel (`emeans_kernel_*`, used everywhere) and the exact loop it is tested
+  against. `emeans.c`: the loop, revival and closing (`emeans_fit`, Euclidean and spherical), one
+  allocation per call; the kernel's transposed centroids are refreshed whenever a centroid moves.
 - `src/functions/*.c`: one file per SQL function (`emeans_cluster.c` is `emeans()`); `vec_io.c` reads
   lists of vectors into float matrices and writes nested lists. Labels are 1-based in SQL, 0-based in the core.
 - `docs/PLAN.md`: the phased plan; `docs/ALGORITHM.md`: the formulas.
