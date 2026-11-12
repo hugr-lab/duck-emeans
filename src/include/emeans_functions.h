@@ -25,6 +25,7 @@ bool emeans_register_settings(duckdb_connection connection, emeans_mem *mem);
 typedef struct {
 	double max_work;
 	int threads;
+	void *query; // emeans_query.h, for interrupts
 } emeans_settings;
 void emeans_bind_settings(duckdb_bind_info info);
 bool emeans_register_recipe(duckdb_connection connection, emeans_mem *mem);

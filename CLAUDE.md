@@ -80,8 +80,10 @@ Use `rtk` as a command prefix in this environment (see the user's global instruc
   through `emeans_malloc`/`emeans_calloc`/`emeans_realloc` so fault injection reaches the out-of-memory
   paths.
 - No mutable global or static state in src/: calls run concurrently on DuckDB's threads.
-- A C API scalar function cannot be interrupted: `emeans_fit` refuses work above `max_work` (rows × k × d
-  over all passes) up front; `emeans()` takes it from the setting `emeans_max_work` at bind.
+- Long fits must stay interruptible: `emeans_fit` asks `params.interrupted` once per step and per
+  k-means++ centroid. The SQL functions pass `emeans_query_interrupted` with the query captured at bind
+  (`emeans_query.h`); a new loop over the rows needs a check too. `emeans_agg` has no query (C API
+  aggregate) and keeps a fixed work limit; `emeans_max_work` (default 0, none) caps the rest up front.
 - With no git commits, set `EXTENSION_VERSION` or the metadata footer is corrupt.
 - Expected values in tests must be derived from the model, not copied from output. Carry the arithmetic
   in a comment.

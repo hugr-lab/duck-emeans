@@ -116,7 +116,7 @@ void FitPartition(ClusterIdGlobalState &gstate, idx_t begin, idx_t end, Partitio
 	vector<int32_t> labels(NumericCast<idx_t>(emeans_points_count(points.Get())));
 	char err[EMEANS_ERR_LEN];
 	if (!labels.empty()) {
-		Check(emeans_points_label(points.Get(), mem, labels.data(), err), err);
+		Check(emeans_points_label(points.Get(), mem, &gstate.client, labels.data(), err), err);
 	}
 	out.labels.assign(kept.size(), 0);
 	for (idx_t i = 0, j = 0; i < kept.size(); i++) {

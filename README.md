@@ -113,11 +113,14 @@ and Qdrant's, answer queries an order of magnitude faster at higher recall; `vss
 
 ## Limits
 
-A running scalar function cannot be interrupted, so one `emeans()` call does at most
-`emeans_max_work` units of work (rows × k × d summed over the passes; default 1e11, 0 = no limit):
+A running `emeans()`, `emeans_spherical()`, `emeans_trace()` or `emeans_cluster_id()` stops when its
+query is interrupted (Ctrl-C in the CLI, `con.interrupt()` in Python): the fit checks once per step.
+`emeans_agg` cannot be interrupted, because the C API gives an aggregate no handle on its query; it
+refuses fits above 1e11 units of work (rows × k × d summed over the passes) instead. To cap the others
+up front as well:
 
 ```sql
-SET emeans_max_work = 1e12;
+SET emeans_max_work = 1e12;   -- default 0: no cap
 ```
 
 A call splits a large batch across up to `emeans_threads` threads (default 0, meaning DuckDB's `threads`

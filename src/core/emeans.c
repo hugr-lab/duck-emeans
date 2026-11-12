@@ -59,7 +59,15 @@ typedef struct {
 	emeans_rng revive_rng;
 	int64_t n_touched;
 	int64_t step;
+	int stopped; // the caller's interrupted() said so
 } run_state;
+
+// Whether to stop: once the caller's callback has said so, without asking it again.
+static int stopping(run_state *s) {
+	const emeans_params *p = s->params;
+	s->stopped = s->stopped || (p->interrupted && p->interrupted(p->interrupt_ctx));
+	return s->stopped;
+}
 
 void emeans_default_params(emeans_params *p) {
 	p->nepochs = 5.0;
@@ -78,6 +86,8 @@ void emeans_default_params(emeans_params *p) {
 	p->frame_ctx = NULL;
 	p->frame_every = 0;
 	p->allocator = (emeans_allocator) {NULL, NULL, NULL};
+	p->interrupted = NULL;
+	p->interrupt_ctx = NULL;
 }
 
 //===--------------------------------------------------------------------===//
@@ -460,7 +470,7 @@ static void run_pass(run_state *s, int64_t pass, int64_t rows, int closing) {
 	emeans_shuffle_prefix(&rng, s->ws.perm, s->n, rows);
 	int64_t b = s->recipe.batch_size;
 	double obj = 0;
-	for (int64_t start = 0; start < rows; start += b) {
+	for (int64_t start = 0; start < rows && !stopping(s); start += b) {
 		obj += run_batch(s, s->ws.perm + start, rows - start < b ? rows - start : b, closing);
 	}
 	s->out->obj[pass] = obj;
@@ -510,7 +520,7 @@ static int64_t weighted_row(run_state *s, emeans_rng *rng, double total) {
 static void init_plus_plus(run_state *s, emeans_rng *rng) {
 	copy_row(s, 0, (int64_t)emeans_rng_below(rng, (uint64_t)s->n));
 	double total = update_min_dist(s, 0);
-	for (int64_t j = 1; j < s->k; j++) {
+	for (int64_t j = 1; j < s->k && !stopping(s); j++) {
 		copy_row(s, j, weighted_row(s, rng, total));
 		total = update_min_dist(s, j);
 	}
@@ -569,11 +579,13 @@ static void run(run_state *s, const emeans_params *p) {
 	init_state(s);
 	emit_frame(s, 0);
 	int64_t passes = s->recipe.n_passes;
-	for (int64_t pass = 0; pass < passes; pass++) {
+	for (int64_t pass = 0; pass < passes && !stopping(s); pass++) {
 		run_pass(s, pass, emeans_pass_rows(s->n, p->nepochs, pass), pass == passes - 1);
 	}
-	close_centroids(s);
-	emit_frame(s, 1);
+	if (!s->stopped) {
+		close_centroids(s);
+		emit_frame(s, 1);
+	}
 }
 
 int emeans_fit(const float *x, int64_t n, int64_t d, int64_t k, const emeans_params *p, emeans_output *out,
@@ -601,5 +613,9 @@ int emeans_fit(const float *x, int64_t n, int64_t d, int64_t k, const emeans_par
 	run(&s, p);
 	workspace_free(&s);
 	out->recipe = s.recipe;
+	if (s.stopped) {
+		emeans_error(err, "interrupted");
+		return EMEANS_INTERRUPTED;
+	}
 	return EMEANS_OK;
 }

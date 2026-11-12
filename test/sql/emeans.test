@@ -149,7 +149,7 @@ SET emeans_max_work = 159;
 statement error
 SELECT emeans(x, 2) FROM squares
 ----
-rows x k x d over all passes is 160, the limit 159. A running call cannot be interrupted; raise the limit with SET emeans_max_work
+rows x k x d over all passes is 160, the limit 159; raise the limit with SET emeans_max_work
 
 statement ok
 SET emeans_max_work = 160;
@@ -173,4 +173,4 @@ RESET emeans_max_work;
 query I
 SELECT current_setting('emeans_max_work')
 ----
-100000000000.0
+0.0
