@@ -1,0 +1,18 @@
+//| mill-version: 1.3.1
+package build
+
+import mill.*, scalalib.*, scalajslib.*, scalajslib.api.*
+
+// The e-means playground: Scala.js + Laminar over DuckDB-WASM with the emeans extension (reached through
+// ../playground-bridge.js). `./mill app.fullLinkJS` links out/app/fullLinkJS.dest/main.js and
+// `./mill app.test` runs the tests on Node; `make` in this directory assembles the site in dist/.
+object app extends ScalaJSModule {
+  def scalaVersion = "3.3.7"
+  def scalaJSVersion = "1.22.0"
+  def moduleKind = ModuleKind.NoModule
+  def mvnDeps = Seq(mvn"com.raquo::laminar::17.2.1")
+
+  object test extends ScalaJSTests, TestModule.Utest {
+    def mvnDeps = Seq(mvn"com.lihaoyi::utest::0.9.5")
+  }
+}

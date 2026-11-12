@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  emeansSql, gaussian, highDimSql, makeBlobs, matrixLiteral, mulberry32, palette, plain, readResult, toCanvas,
+  emeansSql, gaussian, highDimSql, makeBlobs, matrixLiteral, mulberry32, palette, plain, pointsCsv, readResult,
+  readTrace, toCanvas, traceSql,
 } from './demo-core.js';
 
 test('mulberry32 repeats for a seed and stays in [0, 1)', () => {
@@ -72,4 +73,30 @@ test('palette and toCanvas', () => {
   assert.equal(palette(2, 65)[1], 'hsl(138 70% 65%)');
   assert.deepEqual(toCanvas([0, 0], 100, 10), [10, 90]);
   assert.deepEqual(toCanvas([1, 1], 100, 10), [90, 10]);
+});
+
+test('pointsCsv numbers the rows', () => {
+  assert.equal(pointsCsv([0.5, 1, 2, 3.25]), 'i,x,y\n0,0.5,1\n1,2,3.25');
+  assert.equal(pointsCsv([]), 'i,x,y');
+});
+
+test('traceSql checks its numbers and the method', () => {
+  const o = { k: 5, nepochs: 2, seed: 3, method: 'lloyd', framesPerEpoch: 8, batchSize: 0, revival: false };
+  assert.equal(traceSql(o), 'SELECT emeans_trace((SELECT v FROM train), (SELECT v FROM test), 5, 2, 3, ' +
+    "'lloyd', 8, 0, false) AS t");
+  assert.match(traceSql({ ...o, method: 'emeans', revival: true }), /'emeans', 8, 0, true\) AS t$/);
+  assert.throws(() => traceSql({ ...o, method: "x'; DROP TABLE t; --" }), /method must be/);
+  assert.throws(() => traceSql({ ...o, batchSize: -1 }), /batchSize/);
+});
+
+test('readTrace flattens the centroids and keeps a missing test MSE as NaN', () => {
+  const vector = values => ({ toArray: () => values });
+  const frame = { epoch: 1, step: 4n, train_mse: 0.5, test_mse: null,
+                  centroids: vector([vector(new Float32Array([1, 2])), vector(new Float32Array([3, 4]))]) };
+  const t = readTrace({ toJSON: () => ({ batch_size: 8n, alpha0: 0.2, frames: vector([frame]) }) });
+  assert.equal(t.batchSize, 8);
+  assert.deepEqual(t.frames[0].centroids, [1, 2, 3, 4]);
+  assert.equal(t.frames[0].step, 4);
+  assert.ok(Number.isNaN(t.frames[0].testMse));
+  assert.deepEqual(plain({ a: 1n, b: { c: vector([2]) } }), { a: 1, b: { c: [2] } });
 });

@@ -68,6 +68,40 @@ export function highDimSql({ n, d, groups, k, nepochs }) {
   };
 }
 
+// The points of one data set, x0 y0 x1 y1 ..., as CSV with a row number.
+export function pointsCsv(xy) {
+  const lines = ['i,x,y'];
+  for (let i = 0; i < xy.length / 2; i++) {
+    lines.push(`${i},${xy[2 * i]},${xy[2 * i + 1]}`);
+  }
+  return lines.join('\n');
+}
+
+// One recorded run over the tables train and test (each a single row v FLOAT[][]); see emeans_trace.
+export function traceSql({ k, nepochs, seed, method, framesPerEpoch, batchSize, revival }) {
+  requireInteger('k', k, 1, 1e7);
+  requireNepochs(nepochs);
+  requireInteger('seed', seed, 0, 4294967295);
+  requireInteger('batchSize', batchSize, 0, 1e9);
+  if (method !== 'emeans' && method !== 'lloyd') {
+    throw new Error(`method must be 'emeans' or 'lloyd', got ${method}`);
+  }
+  return `SELECT emeans_trace((SELECT v FROM train), (SELECT v FROM test), ${k}, ${nepochs}, ${seed}, ` +
+    `'${method}', ${Number(framesPerEpoch)}, ${batchSize}, ${revival === true}) AS t`;
+}
+
+// The emeans_trace struct as plain JavaScript, centroids flattened to x0 y0 x1 y1 ...
+export function readTrace(t) {
+  const s = plain(typeof t.toJSON === 'function' ? t.toJSON() : t);
+  return {
+    batchSize: s.batch_size,
+    alpha0: s.alpha0,
+    frames: s.frames.map(f => ({
+      epoch: f.epoch, step: f.step, trainMse: f.train_mse, testMse: f.test_mse ?? NaN, centroids: f.centroids.flat(),
+    })),
+  };
+}
+
 // DuckDB-WASM hands back Arrow values: vectors with toArray(), typed arrays, BigInt for BIGINT.
 export function plain(value) {
   if (typeof value === 'bigint') {
@@ -76,7 +110,14 @@ export function plain(value) {
   if (value && typeof value.toArray === 'function') {
     return plain(value.toArray());
   }
-  return ArrayBuffer.isView(value) || Array.isArray(value) ? Array.from(value, plain) : value;
+  if (ArrayBuffer.isView(value) || Array.isArray(value)) {
+    return Array.from(value, plain);
+  }
+  return isRecord(value) ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, plain(v)])) : value;
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype;
 }
 
 // The emeans() struct as plain JavaScript.
