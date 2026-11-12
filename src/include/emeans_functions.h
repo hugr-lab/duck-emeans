@@ -12,6 +12,9 @@ bool emeans_add_overload(duckdb_scalar_function_set set, const char *name, duckd
                          idx_t n_params, duckdb_logical_type ret, duckdb_scalar_function_t fn,
                          duckdb_scalar_function_bind_t bind);
 
+// Every function and setting of the extension; false if one failed to register.
+bool emeans_register_all(duckdb_connection connection);
+
 bool emeans_register_settings(duckdb_connection connection);
 
 // emeans_max_work and the thread count (emeans_threads, 0 meaning DuckDB's threads), captured at bind as
