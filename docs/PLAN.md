@@ -144,7 +144,15 @@ Stages, each with every SQL test passing:
       pipeline task never waits on a busy worker. The core keeps its pthreads fork-join for callers
       without a scheduler (the C tests). 200,000 × 64, k = 256: 0.22 s on one part, 0.07 s on eight,
       the same result.
-   5. `FLOAT[d][]` centroids when the input is a fixed-size array, the type known at bind.
+   5. `FLOAT[d][]` centroids (done): `emeans()` and `emeans_spherical()` are registered in C++
+      (`src/cpp/emeans_cluster.cpp`) with x as `LIST(ANY)`, so the bind sees the vectors' own type; a
+      `FLOAT[]` parameter would have the binder cast the arrays to lists first and lose d. The bind casts x
+      to what the C code reads and, for arrays, returns `FLOAT[d][]` centroids, cast from the `FLOAT[][]`
+      the C code writes. A wrong x fails at bind.
+
+   Still on the C API inside the extension: `emeans_assign`, `emeans_assign_spherical`,
+   `emeans_assign_point`, `emeans_recipe`, `emeans_trace` and the settings. They work as they are; they
+   would move to C++ only for a reason of their own.
 
 Later, if wanted: an "IVF-Flat in SQL" example where `emeans_assign` gives the partition key (see
 docs/QDRANT.md for how such an index compares).

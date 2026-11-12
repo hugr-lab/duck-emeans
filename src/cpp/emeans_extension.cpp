@@ -1,7 +1,8 @@
 // The entry point. Most functions are the C implementations in src/functions, registered through
 // DuckDB's C API on a connection to the loader's database: inside DuckDB a duckdb_connection is a
-// Connection * (duckdb_connect in src/main/capi/v1/duckdb-c.cpp). emeans_agg and emeans_cluster_id are
-// registered here in C++ (src/cpp/emeans_agg.cpp, emeans_window.cpp). docs/PLAN.md, "Moving to the C++ API", says which move next.
+// Connection * (duckdb_connect in src/main/capi/v1/duckdb-c.cpp). emeans, emeans_spherical, emeans_agg
+// and emeans_cluster_id are registered here in C++ (src/cpp/emeans_cluster.cpp, emeans_agg.cpp,
+// emeans_window.cpp). docs/PLAN.md, "Moving to the C++ API", says which move next.
 
 #define DUCKDB_EXTENSION_MAIN
 
@@ -28,6 +29,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	if (!emeans_register_all(reinterpret_cast<duckdb_connection>(&connection), mem)) {
 		throw InternalException("emeans: failed to register functions");
 	}
+	RegisterCluster(loader);
 	RegisterAgg(loader);
 	RegisterClusterId(loader);
 }
