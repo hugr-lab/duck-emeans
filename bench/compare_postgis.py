@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""emeans_agg + emeans_assign_point against PostGIS's ST_ClusterKMeans. make compare_postgis.
+"""emeans_cluster_id against PostGIS's ST_ClusterKMeans. make compare_postgis.
 
 Two parts:
 
@@ -9,6 +9,7 @@ Two parts:
    system does.
 2. Speed and quality. Gaussian blobs in projected metres (n = 10,000 to 1,000,000, k = 8 to 256), one
    partition. Each side labels every row: PostGIS with ST_ClusterKMeans(geom, k) OVER (), DuckDB with
+   emeans_cluster_id(geom, k) OVER (), and for comparison the two-call form it replaces,
    emeans_assign_point(geom, (emeans_agg(geom, k) OVER ()).centroids). Reported: the time, the within-
    cluster sum of squares of each labelling (lower is better), and the adjusted Rand index between the
    two labellings (1 = the same partition).
@@ -75,8 +76,7 @@ def duck_case(con, rows, k, geographic):
     values = ",".join(f"({i}, {'NULL' if w is None else f'{w!r}::{cast}'})" for i, w in enumerate(rows))
     try:
         rows_out = con.execute(
-            f"SELECT i, (emeans_assign_point(g, (emeans_agg(g, {k}) OVER ()).centroids)).label "
-            f"FROM (VALUES {values}) t(i, g) ORDER BY i").fetchall()
+            f"SELECT i, emeans_cluster_id(g, {k}) OVER () FROM (VALUES {values}) t(i, g) ORDER BY i").fetchall()
         return [r[1] for r in rows_out], None
     except duckdb.Error as e:
         return None, str(e).splitlines()[0]
@@ -170,20 +170,25 @@ def timed(fn):
 def speed(pg, con):
     results = []
     print("## Speed and quality\n")
-    print("| n | k | PostGIS s | DuckDB s | WCSS PostGIS | WCSS DuckDB | DuckDB / PostGIS | ARI |")
-    print("|---:|---:|---:|---:|---:|---:|---:|---:|")
+    print("| n | k | PostGIS s | DuckDB s | DuckDB two-call s | WCSS PostGIS | WCSS DuckDB | DuckDB / PostGIS | ARI |")
+    print("|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for n, k in SIZES:
         xy = blobs(n, seed=n + k)
         load(pg, con, xy)
         p, pt = timed(lambda: [r[0] for r in pg.execute(
             f"SELECT ST_ClusterKMeans(geom, {k}) OVER () FROM pts ORDER BY id").fetchall()])
         d, dt = timed(lambda: [r[0] for r in con.execute(
+            f"SELECT emeans_cluster_id(geom, {k}) OVER () FROM pts ORDER BY id").fetchall()])
+        d2, d2t = timed(lambda: [r[0] for r in con.execute(
             f"SELECT (emeans_assign_point(geom, (emeans_agg(geom, {k}) OVER ()).centroids)).label "
             f"FROM pts ORDER BY id").fetchall()])
+        if d2 != d:
+            sys.exit(f"n = {n}, k = {k}: emeans_cluster_id and the two-call form disagree")
         wp, wd = wcss(xy, p), wcss(xy, d)
         ari = adjusted_rand(p, d)
-        print(f"| {n:,} | {k} | {pt:.2f} | {dt:.2f} | {wp:.4g} | {wd:.4g} | {wd / wp:.4f} | {ari:.3f} |", flush=True)
-        results.append({"n": n, "k": k, "pg_s": pt, "duck_s": dt, "ratio": wd / wp, "ari": ari})
+        print(f"| {n:,} | {k} | {pt:.2f} | {dt:.2f} | {d2t:.2f} | {wp:.4g} | {wd:.4g} | {wd / wp:.4f} | {ari:.3f} |",
+              flush=True)
+        results.append({"n": n, "k": k, "pg_s": pt, "duck_s": dt, "duck2_s": d2t, "ratio": wd / wp, "ari": ari})
     return results
 
 
@@ -226,7 +231,7 @@ def figure(pg, con, results, path):
     p, d = label_lonlat(pg, con, ll, 3)
     shown = np.column_stack([(ll[:, 0] + 360) % 360, ll[:, 1]])
     scatter(axes[0, 0], shown, p, "PostGIS ST_ClusterKMeans, SRID 4326, k = 3\n(planar on lon/lat: splits the group at 180°)")
-    scatter(axes[1, 0], shown, d, "emeans_agg, OGC:CRS84, k = 3\n(on the sphere: one group across 180°)")
+    scatter(axes[1, 0], shown, d, "emeans_cluster_id, OGC:CRS84, k = 3\n(on the sphere: one group across 180°)")
     for ax in axes[:, 0]:
         ax.axvline(180, color="0.5", lw=0.8, ls="--")
         ax.set_xlabel("longitude (shown 0 to 360)", fontsize=8)
@@ -235,11 +240,10 @@ def figure(pg, con, results, path):
     xy = blobs(20_000, seed=11)
     load(pg, con, xy)
     pl = [r[0] for r in pg.execute("SELECT ST_ClusterKMeans(geom, 8) OVER () FROM pts ORDER BY id").fetchall()]
-    dl = [r[0] for r in con.execute("SELECT (emeans_assign_point(geom, (emeans_agg(geom, 8) OVER ()).centroids)).label "
-                                    "FROM pts ORDER BY id").fetchall()]
+    dl = [r[0] for r in con.execute("SELECT emeans_cluster_id(geom, 8) OVER () FROM pts ORDER BY id").fetchall()]
     km = (xy - xy.min(axis=0)) / 1000
     scatter(axes[0, 1], km, pl, f"PostGIS, n = 20,000, k = 8\nWCSS {wcss(xy, pl):.4g}", s=2)
-    scatter(axes[1, 1], km, dl, f"emeans_agg, n = 20,000, k = 8\nWCSS {wcss(xy, dl):.4g}, "
+    scatter(axes[1, 1], km, dl, f"emeans_cluster_id, n = 20,000, k = 8\nWCSS {wcss(xy, dl):.4g}, "
             f"adjusted Rand index to PostGIS {adjusted_rand(pl, dl):.3f}", s=2)
     for ax in axes[:, 1]:
         ax.set_xlabel("km east", fontsize=8)
@@ -249,7 +253,7 @@ def figure(pg, con, results, path):
     rows = [r for r in results if r["k"] == 64]
     ns = [r["n"] for r in rows]
     ax.loglog(ns, [r["pg_s"] for r in rows], "o-", color=PG_COLOUR, label="PostGIS ST_ClusterKMeans")
-    ax.loglog(ns, [r["duck_s"] for r in rows], "o-", color=DUCK_COLOUR, label="DuckDB emeans_agg + assign")
+    ax.loglog(ns, [r["duck_s"] for r in rows], "o-", color=DUCK_COLOUR, label="DuckDB emeans_cluster_id")
     for r in rows:
         ax.annotate(f"WCSS ratio {r['ratio']:.3f}", (r["n"], r["duck_s"]), textcoords="offset points", xytext=(4, -12),
                     fontsize=7, color=DUCK_COLOUR)

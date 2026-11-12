@@ -102,7 +102,7 @@ internal APIs can change between releases.
 
 Stages, each with every SQL test passing:
 
-1. Scaffold (done on the `cpp-api` branch): the C++ template's build, DuckDB v2.0.0 as a submodule, and
+1. Scaffold (done): the C++ template's build, DuckDB v2.0.0 as a submodule, and
    a C++ entry point that registers the existing C functions unchanged. Inside DuckDB a
    `duckdb_connection` is a `Connection *` (see `duckdb_connect` in `src/main/capi/v1/duckdb-c.cpp`), so
    the C++ `Load` hands the C registrations a `Connection` on the loader's database. The C sources
@@ -114,7 +114,16 @@ Stages, each with every SQL test passing:
    block is pinned only inside a callback, so between callbacks it can go to `temp_directory`.
    `test/sql/emeans_memory.test` runs a `GROUP BY` whose states exceed `memory_limit` and checks that a
    block above the limit fails with DuckDB's error.
-3. `emeans_cluster_id(geom, k) OVER (...)`, the per-row id in one call, compared again with PostGIS.
+3. `emeans_cluster_id(geom, k) OVER (...)` (done): the per-row id in one call, compared again with
+   PostGIS (docs/POSTGIS.md). It is a DuckDB `WindowFunction` (`src/cpp/emeans_window.cpp`), like
+   `ntile`: it asks for the partition bounds, puts its arguments in the window's collection, and fits
+   each partition once, on the first row evaluated, behind a lock that the threads of a hash group
+   share. The fit and the labels are emeans_agg's C code (`emeans_points.h`), so the id equals
+   `emeans_assign_point(geom, (emeans_agg(geom, k) OVER w).centroids)`, which the tests check row by row.
+   An aggregate with only window callbacks (`window_init` and the batched `window` callback, as
+   quantile uses) was tried first and does not work for `OVER (PARTITION BY ...)`: DuckDB's window
+   self-join optimizer turns a partition-only window aggregate into a `GROUP BY` and a join without
+   checking that the function can aggregate, and the plan fails with "missing a combine method".
 4. Native C++ for the remaining functions, removing the ANY parameter, the thread shim and the C API
    build; `FLOAT[d]` output; interrupts.
 

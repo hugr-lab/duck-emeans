@@ -29,6 +29,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	if (!emeans_register_all(reinterpret_cast<duckdb_connection>(&connection), mem)) {
 		throw InternalException("emeans: failed to register functions");
 	}
+	RegisterClusterId(loader);
 }
 
 void EmeansExtension::Load(ExtensionLoader &loader) {

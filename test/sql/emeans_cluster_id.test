@@ -1,0 +1,128 @@
+# name: test/sql/emeans_cluster_id.test
+# description: emeans_cluster_id() OVER (...) gives each row its cluster in one call, the label the two-call form gives
+# group: [emeans]
+
+require emeans
+
+# Two groups, each two unit squares of POINT geometries, as in emeans_agg.test: rows 0-3 are one square and
+# 4-7 the other. Each square is one cluster; which of them is 1 and which 2 follows the k-means++ seeding.
+statement ok
+CREATE TABLE pts AS
+SELECT grp, i, ('POINT(' || ((i // 4) * 10 + i % 2) || ' ' || (grp * 100 + (i // 4) * 10 + (i // 2) % 2) || ')')::GEOMETRY AS g
+FROM range(2) a(grp), range(8) b(i);
+
+query IIII
+SELECT grp, i // 4 AS square, count(DISTINCT id), min(id) BETWEEN 1 AND 2
+FROM (SELECT grp, i, emeans_cluster_id(g, 2) OVER (PARTITION BY grp) AS id FROM pts)
+GROUP BY ALL ORDER BY ALL;
+----
+0	0	1	true
+0	1	1	true
+1	0	1	true
+1	1	1	true
+
+query II
+SELECT grp, count(DISTINCT id) FROM (SELECT grp, emeans_cluster_id(g, 2) OVER (PARTITION BY grp) AS id FROM pts)
+GROUP BY grp ORDER BY grp;
+----
+0	2
+1	2
+
+# The partition is clustered whatever the ORDER BY and frame: the same ids.
+query I
+SELECT count(*) FROM (
+    SELECT emeans_cluster_id(g, 2) OVER (PARTITION BY grp ORDER BY i ROWS BETWEEN CURRENT ROW AND CURRENT ROW) AS a,
+           emeans_cluster_id(g, 2) OVER (PARTITION BY grp) AS b
+    FROM pts)
+WHERE a != b;
+----
+0
+
+# Without PARTITION BY the whole input is one partition: four squares, 0-3, 4-7, 100-103 and 104-107 in y.
+query I
+SELECT count(DISTINCT id) FROM (SELECT emeans_cluster_id(g, 4) OVER () AS id FROM pts);
+----
+4
+
+# NULL points and POINT EMPTY get NULL and take no part in the fit: k = 2 fits the two real points, one each.
+query II
+SELECT i, emeans_cluster_id(g, 2) OVER () IS NULL
+FROM (VALUES (0, 'POINT(0 0)'::GEOMETRY), (1, NULL), (2, 'POINT EMPTY'::GEOMETRY), (3, 'POINT(10 10)'::GEOMETRY)) t(i, g)
+ORDER BY i;
+----
+0	false
+1	true
+2	true
+3	false
+
+query I
+SELECT count(DISTINCT id) FROM (
+    SELECT emeans_cluster_id(g, 2) OVER () AS id
+    FROM (VALUES ('POINT(0 0)'::GEOMETRY), (NULL), ('POINT EMPTY'::GEOMETRY), ('POINT(10 10)'::GEOMETRY)) t(g));
+----
+2
+
+# On many points, in several partitions and several chunks each, emeans_cluster_id gives what
+# emeans_assign_point gives with emeans_agg's centroids: planar, and geographic with points across the
+# antimeridian.
+statement ok
+CREATE TABLE many AS
+SELECT i % 4 AS part, (i * 7919 % 10007) / 10007.0 * 300 - 150 AS x, (i * 104729 % 10009) / 10009.0 * 120 - 60 AS y
+FROM range(40000) r(i);
+
+query I
+SELECT count(*) FROM (
+    SELECT emeans_cluster_id(g, 7) OVER w AS id,
+           (emeans_assign_point(g, (emeans_agg(g, 7) OVER w).centroids)).label AS two_call
+    FROM (SELECT part, ('POINT(' || x || ' ' || y || ')')::GEOMETRY AS g FROM many)
+    WINDOW w AS (PARTITION BY part))
+WHERE id IS DISTINCT FROM two_call;
+----
+0
+
+query I
+SELECT count(*) FROM (
+    SELECT emeans_cluster_id(g, 7) OVER w AS id,
+           (emeans_assign_point(g, (emeans_agg(g, 7) OVER w).centroids)).label AS two_call
+    FROM (SELECT part, ('POINT(' || (x + 180) % 360 - 180 || ' ' || y || ')')::GEOMETRY('OGC:CRS84') AS g FROM many)
+    WINDOW w AS (PARTITION BY part))
+WHERE id IS DISTINCT FROM two_call;
+----
+0
+
+# Vectors: the label emeans_assign gives with emeans_agg's centroids.
+query I
+SELECT count(*) FROM (
+    SELECT emeans_cluster_id(v, 5) OVER w AS id,
+           (emeans_assign(v, (emeans_agg(v, 5) OVER w).centroids)).label AS two_call
+    FROM (SELECT part, [x, y, x * y / 100] AS v FROM many)
+    WINDOW w AS (PARTITION BY part))
+WHERE id IS DISTINCT FROM two_call;
+----
+0
+
+# nepochs and seed, as emeans_agg takes them.
+query I
+SELECT count(*) FROM (
+    SELECT emeans_cluster_id(v, 5, 2, 7) OVER w AS id,
+           (emeans_assign(v, (emeans_agg(v, 5, 2, 7) OVER w).centroids)).label AS two_call
+    FROM (SELECT part, [x, y]::FLOAT[] AS v FROM many)
+    WINDOW w AS (PARTITION BY part))
+WHERE id IS DISTINCT FROM two_call;
+----
+0
+
+statement error
+SELECT emeans_cluster_id(g, 2) FROM pts;
+----
+Window functions are not supported here
+
+statement error
+SELECT emeans_cluster_id(g, 9) OVER (PARTITION BY grp) FROM pts;
+----
+emeans_cluster_id: k must not exceed n
+
+statement error
+SELECT emeans_cluster_id('LINESTRING(0 0, 1 1)'::GEOMETRY, 1) OVER ();
+----
+emeans_cluster_id: takes POINT geometries; use ST_Centroid for others

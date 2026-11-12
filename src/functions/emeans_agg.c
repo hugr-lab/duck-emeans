@@ -14,11 +14,14 @@
 
 #include "duckdb_extension.h"
 
+#include "assign.h"
 #include "emeans.h"
 #include "emeans_functions.h"
+#include "emeans_points.h"
 #include "geo.h"
 #include "vec_io.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -426,28 +429,32 @@ static void fit_params(const agg_state *s, emeans_mem *mem, emeans_params *p) {
 	p->allocator = emeans_mem_allocator(mem);
 }
 
-// The points in canonical form and sorted, so the result does not depend on the order rows arrived in.
-// The sort buffer goes back before the fit, which takes its own workspace. s is pinned.
-static int fit_state(const agg_state *s, emeans_mem *mem, duckdb_vector result, idx_t row, char *err) {
-	layout l = make_layout(s, s->geometry);
+// The fit of a state's points: in canonical form and sorted, so the result does not depend on the order
+// rows arrived in. The sort buffer goes back before the fit, which takes its own workspace. s is pinned;
+// on success b holds the centroids in b->c and out describes the run.
+static int fit_model(const agg_state *s, emeans_mem *mem, const layout *l, fit_buffers *b, emeans_output *out,
+                     char *err) {
 	emeans_params p;
 	fit_params(s, mem, &p);
 	emeans_recipe recipe;
-	if (emeans_resolve_recipe(s->n, s->k, l.dim, p.nepochs, p.law, 0, 0, &recipe, err)) {
+	if (emeans_resolve_recipe(s->n, s->k, l->dim, p.nepochs, p.law, 0, 0, &recipe, err) ||
+	    alloc_fit(b, s, l->dim, recipe.n_passes, mem, err)) {
 		return 1;
 	}
+	float *x = emeans_block_data(b->x);
+	to_matrix(s, l, x);
+	emeans_sort_rows(x, emeans_block_data(b->tmp), s->n, l->dim);
+	emeans_block_free(b->tmp);
+	b->tmp = NULL;
+	*out = (emeans_output) {b->c, emeans_block_data(b->labels), b->obj, 0, recipe};
+	return emeans_fit(x, s->n, l->dim, s->k, &p, out, err) != EMEANS_OK;
+}
+
+static int fit_state(const agg_state *s, emeans_mem *mem, duckdb_vector result, idx_t row, char *err) {
+	layout l = make_layout(s, s->geometry);
 	fit_buffers b = {NULL, NULL, NULL, NULL, NULL};
-	int rc = alloc_fit(&b, s, l.dim, recipe.n_passes, mem, err);
-	if (rc == 0) {
-		float *x = emeans_block_data(b.x);
-		to_matrix(s, &l, x);
-		emeans_sort_rows(x, emeans_block_data(b.tmp), s->n, l.dim);
-		emeans_block_free(b.tmp);
-		b.tmp = NULL;
-		emeans_output out = {b.c, emeans_block_data(b.labels), b.obj, 0, recipe};
-		rc = emeans_fit(x, s->n, l.dim, s->k, &p, &out, err) != EMEANS_OK ||
-		     write_result(result, row, s, &l, &out, err);
-	}
+	emeans_output out;
+	int rc = fit_model(s, mem, &l, &b, &out, err) || write_result(result, row, s, &l, &out, err);
 	free_fit(&b);
 	return rc;
 }
@@ -470,6 +477,145 @@ static void Finalize(duckdb_function_info info, duckdb_aggregate_state *source, 
 			return;
 		}
 	}
+}
+
+//===--------------------------------------------------------------------===//
+// emeans_cluster_id: one state per window frame (emeans_points.h)
+//===--------------------------------------------------------------------===//
+
+size_t emeans_points_size(void) {
+	return sizeof(agg_state);
+}
+
+void emeans_points_init(void *state) {
+	memset(state, 0, sizeof(agg_state));
+}
+
+void emeans_points_free(void *state) {
+	emeans_block_free(((agg_state *)state)->block);
+}
+
+int emeans_points_add(void *state, duckdb_data_chunk input, idx_t first, idx_t end, emeans_mem *mem, bool *kept,
+                      char *err) {
+	agg_state *s = state;
+	duckdb_vector points = duckdb_data_chunk_get_vector(input, 0);
+	agg_state *pinned[1];
+	update_ctx ctx = {points,   is_geometry(points), column_is_geographic(points), {NULL, 0, 0, NULL, NULL},
+	                  NULL,     0,                   {mem, pinned, 0}};
+	int rc = check_points_type(points, err);
+	for (idx_t row = first; rc == 0 && row < end; row++) {
+		int64_t before = s->n;
+		rc = update_row(input, row, &ctx, s, err);
+		kept[row - first] = s->n > before;
+	}
+	unpin_all(&ctx.pins);
+	emeans_buffer_free(&ctx.buf);
+	free(ctx.row);
+	return rc;
+}
+
+// Labels as emeans_assign_point gives them for emeans_agg's centroids: Euclidean on (x, y), in double.
+static void label_planar(const agg_state *s, const double *c, int32_t *labels) {
+	for (int64_t i = 0; i < s->n; i++) {
+		double best_d = INFINITY;
+		for (int64_t j = 0; j < s->k; j++) {
+			double dx = s->rows[2 * i] - c[2 * j], dy = s->rows[2 * i + 1] - c[2 * j + 1];
+			double d = dx * dx + dy * dy;
+			if (d < best_d) {
+				best_d = d;
+				labels[i] = (int32_t)j + 1;
+			}
+		}
+	}
+}
+
+// The same along the sphere, with the great-circle distance in double, for [longitude, latitude] centroids.
+static int label_geographic(const agg_state *s, const double *c, int32_t *labels, char *err) {
+	double *q = malloc((size_t)(3 * s->k) * sizeof(double));
+	if (!q) {
+		return emeans_error(err, "out of memory");
+	}
+	for (int64_t j = 0; j < s->k; j++) {
+		emeans_lonlat_to_unit_d(c[2 * j], c[2 * j + 1], q + 3 * j);
+	}
+	for (int64_t i = 0; i < s->n; i++) {
+		double p[3], best_d = INFINITY;
+		emeans_lonlat_to_unit_d(s->rows[2 * i], s->rows[2 * i + 1], p);
+		for (int64_t j = 0; j < s->k; j++) {
+			double d = emeans_great_circle_m_d(p, q + 3 * j);
+			if (d < best_d) {
+				best_d = d;
+				labels[i] = (int32_t)j + 1;
+			}
+		}
+	}
+	free(q);
+	return 0;
+}
+
+// Vectors as emeans_assign labels them: the float32 kernel against the float centroids.
+typedef struct {
+	float *ct, *bias, *scratch, *x;
+} kernel_buffers;
+
+static int label_vectors(const agg_state *s, const float *c, int32_t *labels, char *err) {
+	int64_t d = s->dim;
+	kernel_buffers kb = {malloc((size_t)(s->k * d) * sizeof(float)), malloc((size_t)s->k * sizeof(float)),
+	                     malloc((size_t)emeans_kernel_scratch(d) * sizeof(float)), malloc((size_t)d * sizeof(float))};
+	int rc = !kb.ct || !kb.bias || !kb.scratch || !kb.x ? emeans_error(err, "out of memory") : 0;
+	if (rc == 0) {
+		emeans_kernel kn;
+		emeans_kernel_init(&kn, kb.ct, kb.bias, s->k, d, 0);
+		for (int64_t j = 0; j < s->k; j++) {
+			emeans_kernel_set(&kn, j, c + j * d);
+		}
+		const int64_t first = 0;
+		for (int64_t i = 0; i < s->n; i++) {
+			for (int64_t t = 0; t < d; t++) {
+				kb.x[t] = (float)s->rows[i * d + t];
+			}
+			emeans_kernel_nearest(&kn, kb.x, &first, 1, &labels[i], kb.scratch);
+			labels[i]++;
+		}
+	}
+	free(kb.ct);
+	free(kb.bias);
+	free(kb.scratch);
+	free(kb.x);
+	return rc;
+}
+
+static int label_state(const agg_state *s, const layout *l, const float *c, int32_t *labels, char *err) {
+	if (!s->geometry) {
+		return label_vectors(s, c, labels, err);
+	}
+	int64_t cols;
+	double *centroids = output_centroids(s, l, c, &cols);
+	int rc = !centroids ? emeans_error(err, "out of memory")
+	         : s->geographic ? label_geographic(s, centroids, labels, err)
+	                         : (label_planar(s, centroids, labels), 0);
+	free(centroids);
+	return rc;
+}
+
+int64_t emeans_points_count(const void *state) {
+	return ((const agg_state *)state)->n;
+}
+
+int emeans_points_label(void *state, emeans_mem *mem, int32_t *labels, char *err) {
+	agg_state *s = state;
+	agg_state *pinned[1];
+	pin_list pins = {mem, pinned, 0};
+	if (pin_state(s, &pins, err)) {
+		return 1;
+	}
+	layout l = make_layout(s, s->geometry); // reads the points, so after the pin
+	fit_buffers b = {NULL, NULL, NULL, NULL, NULL};
+	emeans_output out;
+	int rc = fit_model(s, mem, &l, &b, &out, err) || label_state(s, &l, b.c, labels, err);
+	free_fit(&b);
+	unpin_all(&pins);
+	return rc;
 }
 
 //===--------------------------------------------------------------------===//
