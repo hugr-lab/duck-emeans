@@ -3,6 +3,11 @@
 # Laminar, built here with Mill), with the WASM build of the extension. Runs after every successful
 # distribution pipeline on main, taking the wasm_eh build from that run, or by hand (the latest such run).
 #
+# Only the build of main's current head is deployed. When several merges land close together, their
+# distribution runs can finish out of order, and the site must not go back to an older build because its
+# run finished last: a run for an older commit is skipped, and the newer commit's own run deploys. The
+# deploy job checks again, since main can move while the site is being built.
+#
 name: Pages
 on:
   workflow_run:
@@ -22,8 +27,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  check:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      latest: ${{ steps.head.outputs.latest }}
+    steps:
+      - name: Is the build from main's current head?
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILT: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          HEAD=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ -z "$BUILT" ] || [ "$BUILT" = "$HEAD" ]; then
+            echo "latest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "latest=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipped: this build is of $BUILT, main is at $HEAD; that commit's run deploys."
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.latest == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -68,5 +94,19 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Is the build still from main's current head?
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILT: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          HEAD=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ -n "$BUILT" ] && [ "$BUILT" != "$HEAD" ]; then
+            echo "::notice::Not deployed: main moved to $HEAD while $BUILT was being built; that commit's run deploys."
+            echo "latest=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "latest=true" >> "$GITHUB_OUTPUT"
+          fi
       - id: deployment
+        if: steps.head.outputs.latest == 'true'
         uses: actions/deploy-pages@v4
