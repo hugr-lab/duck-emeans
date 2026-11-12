@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `emeans_trace()`: a run of e-means or Lloyd recorded as frames of centroids with train and held-out test
+  MSE. The core gains `constant_step` (with full batches and alpha0 = 1, Lloyd) and a frame callback.
+- The playground (`web/playground/`, Scala.js + Laminar): Lloyd and e-means side by side with Voronoi
+  cells and the loss over epochs, run in DuckDB-WASM and replayed.
 - Browser demo (`web/`, GitHub Pages): DuckDB-WASM with the `wasm_eh` build of the extension, clustering
   points in the plane and timing embedding-sized vectors (d up to 1536).
 - Threads: a large batch's assignment is split across up to `emeans_threads` threads (default: DuckDB's

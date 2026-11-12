@@ -8,9 +8,12 @@ The paper reports Lloyd's 25-epoch loss beaten in 1.4 to 2.6 epochs.
 
 It is written in C11 on the stable DuckDB C extension API and built for DuckDB 2.0.
 
-**[Try it in your browser](https://hugr-lab.github.io/duck-emeans/)**: the extension compiled to
-WebAssembly, loaded into DuckDB-WASM, clustering points in the plane and timing embedding-sized vectors
-(d = 768 or 1536). Nothing is installed and no data leaves the page.
+**[The playground](https://hugr-lab.github.io/duck-emeans/playground.html)**: Lloyd's k-means and e-means
+side by side on 2-D data, with their Voronoi cells and the train and held-out test MSE over epochs, both
+run by the extension compiled to WebAssembly inside DuckDB-WASM and then replayed. It follows the
+[playground](https://e-means.github.io/playground.html) of the e-means authors, with the computation in
+SQL. A [simpler demo](https://hugr-lab.github.io/duck-emeans/) clusters points in the plane and times
+embedding-sized vectors (d = 768 or 1536). Nothing is installed and no data leaves the page.
 
 ## Status
 
@@ -26,6 +29,7 @@ e-means site's (Lloyd and e-means side by side), a GPU build, and the community-
 | `emeans_spherical(vectors, k [, nepochs [, seed]])` | as `emeans`, for unit vectors: by direction, unit centroids |
 | `emeans_assign_spherical(vector, centroids)` | `STRUCT(label INTEGER, similarity DOUBLE)`, the closest direction |
 | `emeans_recipe(n, k, d, nepochs [, batch_law])` | the batch size, step, law, passes and steps e-means would use |
+| `emeans_trace(train, test, k, nepochs, seed, method, frames_per_epoch, batch_size, revival)` | frames of a run (`'emeans'` or `'lloyd'`): centroids, train and test MSE; for playgrounds and teaching |
 
 `vectors` is a list of equal-length vectors, as `FLOAT[]`, `DOUBLE[]`, integer lists or fixed-size arrays
 such as `FLOAT[384]`; build it with `list(embedding ORDER BY id)`. Labels are 1-based, so
@@ -80,17 +84,21 @@ make compare_faiss bench   # against faiss-cpu; needs uv
 
 See [DEVELOPMENT.md](DEVELOPMENT.md).
 
-## The browser demo
+## The browser demos
 
-`web/` is a static page: `duckdb.js` starts DuckDB-WASM (the build of DuckDB v2.0.0) with unsigned
-extensions allowed and loads `emeans.duckdb_extension.wasm`, the `wasm_eh` build from the distribution
-pipeline; `demo-core.js` holds the logic (`npm test`) and `demo.js` the page. The Pages workflow publishes
-it after every successful build on `main`. To run it locally, put the `wasm_eh` build next to the files
-and serve the directory:
+Both live in `web/`. `duckdb.js` starts DuckDB-WASM (the build of DuckDB v2.0.0) with unsigned extensions
+allowed and loads `emeans.duckdb_extension.wasm`, the `wasm_eh` build from the distribution pipeline.
+
+- `index.html` with `demo.js` is the simpler demo; `demo-core.js` holds its logic (`npm test`).
+- `playground.html` is the playground: a Scala.js + Laminar app in `web/playground/` (Mill), which reaches
+  DuckDB through `playground-bridge.js`. `make -C web/playground test` runs its tests on Node.
+
+The Pages workflow builds both and publishes them after every successful build on `main`. To run them
+locally (needs Java and Node):
 
 ```sh
 gh run download <run-id> -n emeans-v2.0.0-extension-wasm_eh -D web/
-python3 -m http.server -d web 8000   # http://localhost:8000
+make -C web/playground serve   # http://localhost:8099/playground.html
 ```
 
 In the browser the extension runs on one thread, without Accelerate: 10,000 vectors of dimension 768

@@ -253,7 +253,7 @@ object Main:
         button(typ := "button", disabled <-- busy, "Run", onClick --> (_ => timeHighDim(nv.now(), d.now(), kv.now()))),
       ),
       p(cls := "result", child.text <-- timing.signal),
-      pre(child.text <-- timingSql.signal),
+      pre(cls("empty") <-- timingSql.signal.map(_.isEmpty), child.text <-- timingSql.signal),
     )
 
   def app: HtmlElement =
@@ -274,7 +274,7 @@ object Main:
       p(cls := "verdict", child.text <-- verdict),
       h2("The queries"),
       p("Each panel is one call of emeans_trace over the tables train and test (one list of points each):"),
-      pre(child.text <-- queries.signal),
+      pre(cls("empty") <-- queries.signal.map(_.isEmpty), child.text <-- queries.signal),
       embeddingPanel,
       // Redraw whenever the data, the runs or the playhead change.
       points.signal.combineWith(runs.signal, playhead.signal) --> (_ => redraw()),

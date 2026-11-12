@@ -102,10 +102,15 @@ export function readTrace(t) {
   };
 }
 
-// DuckDB-WASM hands back Arrow values: vectors with toArray(), typed arrays, BigInt for BIGINT.
+// DuckDB-WASM hands back Arrow values: vectors with toArray(), struct rows with toJSON(), typed arrays, and
+// BigInt for BIGINT.
 export function plain(value) {
   if (typeof value === 'bigint') {
     return Number(value);
+  }
+  // Struct rows have toArray() too, but it drops the field names: toJSON() first.
+  if (value && typeof value.toJSON === 'function') {
+    return plain(value.toJSON());
   }
   if (value && typeof value.toArray === 'function') {
     return plain(value.toArray());

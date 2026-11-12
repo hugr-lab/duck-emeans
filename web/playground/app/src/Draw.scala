@@ -81,7 +81,7 @@ object Draw:
 
   private final case class Plot(ctx: dom.CanvasRenderingContext2D, size: Double, maxEpoch: Double, yLo: Double,
                                 yHi: Double):
-    val left: Double = size * 0.14
+    val left: Double = size * 0.2
     val bottom: Double = size * 0.88
     val top: Double = size * 0.04
     val right: Double = size * 0.97

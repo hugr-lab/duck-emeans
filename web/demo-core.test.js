@@ -91,8 +91,9 @@ test('traceSql checks its numbers and the method', () => {
 
 test('readTrace flattens the centroids and keeps a missing test MSE as NaN', () => {
   const vector = values => ({ toArray: () => values });
-  const frame = { epoch: 1, step: 4n, train_mse: 0.5, test_mse: null,
-                  centroids: vector([vector(new Float32Array([1, 2])), vector(new Float32Array([3, 4]))]) };
+  // A list of structs arrives as a vector of struct rows, each with toJSON() and a toArray() of bare values.
+  const frame = { toArray: () => [1, 4n, 0.5, null, []], toJSON: () => ({ epoch: 1, step: 4n, train_mse: 0.5, test_mse: null,
+                  centroids: vector([vector(new Float32Array([1, 2])), vector(new Float32Array([3, 4]))]) }) };
   const t = readTrace({ toJSON: () => ({ batch_size: 8n, alpha0: 0.2, frames: vector([frame]) }) });
   assert.equal(t.batchSize, 8);
   assert.deepEqual(t.frames[0].centroids, [1, 2, 3, 4]);
