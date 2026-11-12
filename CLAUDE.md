@@ -54,6 +54,11 @@ Use `rtk` as a command prefix in this environment (see the user's global instruc
   tests use it.
 - `src/functions/*.c`: one file per SQL function (`emeans_cluster.c` is `emeans()`); `vec_io.c` reads
   lists of vectors into float matrices and writes nested lists. Labels are 1-based in SQL, 0-based in the core.
+- `src/cpp/`: the C++ side. `emeans_extension.cpp` is the entry point; `emeans_mem.cpp` backs
+  `emeans_mem.h` with the buffer manager (every row-sized buffer in `src/functions` comes from there);
+  `emeans_window.cpp` is `emeans_cluster_id`, a DuckDB `WindowFunction` that fits each partition with
+  `emeans_agg`'s C code through `emeans_points.h`. It must stay a `WindowFunction`: a window-only
+  aggregate is rewritten into a GROUP BY by the window self-join optimizer and fails.
 - `docs/PLAN.md`: the phased plan; `docs/ALGORITHM.md`: the formulas.
 - `web/playground/`: the playground, Scala.js + Laminar built with Mill (`make -C web/playground test`,
   `make -C web/playground dist`); it reaches DuckDB through `web/playground-bridge.js`.
