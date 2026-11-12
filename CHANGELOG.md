@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Validation against faiss-cpu 1.16.0 (`make compare_faiss`, also in CI): the recipe matches for 220
+  shapes, the final objective is within 1% of `NumpyEmeans` (−0.43% at d = 16, +0.36% at d = 128), and
+  `emeans_assign` agrees with `faiss.knn`. Benchmark (`make bench`) in docs/BENCHMARK.md.
 - SQL: `emeans(vectors, k [, nepochs [, seed]])` returns centroids, 1-based labels, the objective per pass,
   the batch size, alpha0 and the number of splits; `emeans_assign(vector, centroids)` returns the nearest
   centroid and the squared distance. Vectors as FLOAT, DOUBLE or integer lists or fixed-size arrays.

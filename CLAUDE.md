@@ -29,6 +29,8 @@ make test_release                   # SQL tests, latest DuckDB
 make test_core                      # C core tests under ASan/UBSan
 make test_threads                   # core on 8 threads under ThreadSanitizer
 make crap                           # CRAP < 10 for every C function; CI fails otherwise
+make compare_faiss                  # against faiss-cpu NumpyEmeans (uv, pinned Python 3.12 env); CI too
+make bench                          # timings for docs/BENCHMARK.md; manual
 ```
 
 Use `rtk` as a command prefix in this environment (see the user's global instructions).

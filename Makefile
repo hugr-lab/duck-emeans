@@ -1,4 +1,4 @@
-.PHONY: clean clean_all test_core test_threads crap help
+.PHONY: clean clean_all test_core test_threads crap compare_faiss bench help
 
 PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
@@ -50,6 +50,16 @@ test_threads:
 		-Isrc/include test/c/test_threads.c $(CORE_SOURCES) -lm -o $(THREADS_TEST_BIN)
 	TSAN_OPTIONS=halt_on_error=1 $(THREADS_TEST_BIN)
 
+# Validation against the reference e-means in faiss-cpu, and the benchmark (manual, not CI gating).
+# A pinned Python 3.12 environment via uv: faiss-cpu ships faiss.contrib.e_means from 1.16.0.
+REFERENCE_PYTHON := uv run --quiet --no-project --python 3.12 --with faiss-cpu==1.16.0 --with numpy==2.3.4 \
+	--with pyarrow==22.0.0 --with duckdb==2.0.0 python -I
+compare_faiss: release
+	$(REFERENCE_PYTHON) test/python/compare_faiss.py build/release/$(EXTENSION_NAME).duckdb_extension
+
+bench: release
+	$(REFERENCE_PYTHON) bench/run_bench.py build/release/$(EXTENSION_NAME).duckdb_extension
+
 # CRAP score of every C function in src/ (complexity from lizard, coverage from llvm-cov over test_core,
 # test_threads and the SQL tests). Exit 2 when any function scores CRAP >= 10.
 crap:
@@ -66,3 +76,5 @@ help:
 	@echo "make test_core        - C tests of src/core under ASan/UBSan (no DuckDB needed)"
 	@echo "make test_threads     - 8 threads on a shared parameter table under ThreadSanitizer"
 	@echo "make crap             - CRAP score per C function (lizard + llvm-cov); fails at CRAP >= 10"
+	@echo "make compare_faiss    - recipe, objective and assignment against faiss-cpu's NumpyEmeans (manual)"
+	@echo "make bench            - emeans() against NumpyEmeans and Lloyd, timings (manual)"
