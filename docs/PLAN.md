@@ -58,9 +58,9 @@ argument once in bind and caches the norms, so the hot path is a plain n × k ×
    closing means, determinism, fault injection, 8 threads under TSan.
 3. SQL (done): `emeans`, `emeans_assign`, LIST and ARRAY inputs (arrays through the implicit cast),
    NULL handling, errors, the `emeans_max_work` setting, sqllogictests, a threads test.
-4. Validation: final objective within 1% of `NumpyEmeans` (`pip install faiss-cpu`) on Gaussian
-   mixtures (n = 100k, d = 16 and 128, k = 256) with the same recipe, `emeans_assign` agreeing with
-   `faiss.knn`; benchmark; README and `docs/ALGORITHM.md`.
+4. Validation (done): the recipe matches faiss-cpu 1.16.0 for 220 shapes; the final objective is within
+   1% of `NumpyEmeans` on Gaussian mixtures (n = 100k, d = 16 and 128, k = 256); `emeans_assign` agrees
+   with `faiss.knn`; benchmark in docs/BENCHMARK.md (2.5× slower than FAISS at d = 16, 13× at d = 128).
 5. `FLOAT[d]` output, spherical, threaded assignment, the budget setting.
 6. Submission to `duckdb/community-extensions`, 2.0 only, like `cpt`.
 

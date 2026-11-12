@@ -10,8 +10,9 @@ It is written in C11 on the stable DuckDB C extension API and built for DuckDB 2
 
 ## Status
 
-Phases 1 to 3 of [the plan](docs/PLAN.md) are done: the C core and the SQL functions below. Still to come:
-validation against the FAISS reference, a faster assignment kernel, the cosine variant, and a browser demo.
+Phases 1 to 4 of [the plan](docs/PLAN.md) are done: the C core, the SQL functions below, and validation
+against the reference implementation in faiss-cpu. Still to come: a faster distance kernel, the cosine
+variant, and a browser demo.
 
 | Function | Returns |
 |---|---|
@@ -36,6 +37,15 @@ SELECT c.doc_id, c.chunk_id, (emeans_assign(c.embedding, t.r.centroids)).label A
 FROM chunks c JOIN topics t USING (doc_id);
 ```
 
+## How it compares
+
+Against faiss-cpu's `NumpyEmeans` on Gaussian mixtures (n = 100,000, k = 256, 2 epochs), the final
+objective is within 0.5% (−0.43% at d = 16, +0.36% at d = 128), both beat Lloyd at 25 iterations, and
+the recipe matches for 220 shapes. Speed is the gap: the distances are a plain C loop, 2.5× slower than
+FAISS at d = 16 and 13× at d = 128, where FAISS uses BLAS. See [docs/BENCHMARK.md](docs/BENCHMARK.md).
+
+## Limits
+
 A running scalar function cannot be interrupted, so one `emeans()` call does at most
 `emeans_max_work` units of work (rows × k × d summed over the passes; default 1e11, 0 = no limit):
 
@@ -50,6 +60,7 @@ git clone --recurse-submodules https://github.com/hugr-lab/duck-emeans
 cd duck-emeans
 make configure && make release
 make test_release test_core test_threads
+make compare_faiss bench   # against faiss-cpu; needs uv
 ```
 
 See [DEVELOPMENT.md](DEVELOPMENT.md).

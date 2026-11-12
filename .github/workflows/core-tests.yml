@@ -1,5 +1,6 @@
 #
-# Numerical core under ASan/UBSan and ThreadSanitizer, and the CRAP gate over every C function.
+# Numerical core under ASan/UBSan and ThreadSanitizer, the CRAP gate over every C function, and the
+# comparison with the reference e-means in faiss-cpu.
 #
 name: Core tests
 on:
@@ -39,3 +40,19 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - run: make configure
       - run: make crap
+
+  compare_faiss:
+    name: against faiss-cpu NumpyEmeans
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+      - run: make configure
+      - run: make compare_faiss
