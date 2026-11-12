@@ -1,0 +1,68 @@
+#
+# The browser demo (web/) on GitHub Pages, with the WASM build of the extension. Runs after every successful
+# distribution pipeline on main, taking the wasm_eh build from that run, or by hand (the latest such run).
+#
+name: Pages
+on:
+  workflow_run:
+    workflows: ["Main Extension Distribution Pipeline"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  actions: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: Find the distribution run
+        id: run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          if [ -z "$RUN_ID" ]; then
+            RUN_ID=$(gh run list -R "$GITHUB_REPOSITORY" --workflow MainDistributionPipeline.yml --branch main \
+              --status success --limit 1 --json databaseId -q '.[0].databaseId')
+          fi
+          echo "id=$RUN_ID" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        with:
+          name: emeans-v2.0.0-extension-wasm_eh
+          run-id: ${{ steps.run.outputs.id }}
+          github-token: ${{ github.token }}
+          path: wasm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm test
+      - name: Assemble the site
+        run: |
+          mkdir _site
+          cp web/index.html web/demo.js web/demo-core.js web/duckdb.js wasm/emeans.duckdb_extension.wasm _site/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

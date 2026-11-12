@@ -47,6 +47,9 @@ Use `rtk` as a command prefix in this environment (see the user's global instruc
 - `src/functions/*.c`: one file per SQL function (`emeans_cluster.c` is `emeans()`); `vec_io.c` reads
   lists of vectors into float matrices and writes nested lists. Labels are 1-based in SQL, 0-based in the core.
 - `docs/PLAN.md`: the phased plan; `docs/ALGORITHM.md`: the formulas.
+- `web/`: the browser demo. `demo-core.js` is pure and tested (`npm test`); `demo.js` is the page;
+  `duckdb.js` pins DuckDB-WASM `1.33.1-dev114.0`, the build of DuckDB v2.0.0 (extensions only load in the
+  release they were built for). `.github/workflows/pages.yml` deploys it with the `wasm_eh` build.
 
 ## Gotchas
 

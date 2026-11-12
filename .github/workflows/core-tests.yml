@@ -56,3 +56,14 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - run: make configure
       - run: make compare_faiss
+
+  web:
+    name: browser demo logic (npm test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm test

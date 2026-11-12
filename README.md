@@ -8,11 +8,16 @@ The paper reports Lloyd's 25-epoch loss beaten in 1.4 to 2.6 epochs.
 
 It is written in C11 on the stable DuckDB C extension API and built for DuckDB 2.0.
 
+**[Try it in your browser](https://hugr-lab.github.io/duck-emeans/)**: the extension compiled to
+WebAssembly, loaded into DuckDB-WASM, clustering points in the plane and timing embedding-sized vectors
+(d = 768 or 1536). Nothing is installed and no data leaves the page.
+
 ## Status
 
-Phases 1 to 5 of [the plan](docs/PLAN.md) are done: the C core with a vectorised distance kernel, the SQL
-functions below with a cosine variant, and validation against the reference implementation in faiss-cpu.
-Still to come: a browser demo and the community-extension submission.
+Phases 1 to 6 of [the plan](docs/PLAN.md) are done: the C core with a vectorised distance kernel, threads
+and Accelerate on macOS, the SQL functions below with a cosine variant, validation against the reference
+implementation in faiss-cpu, and the browser demo. Still to come: a playground in the style of the
+e-means site's (Lloyd and e-means side by side), a GPU build, and the community-extension submission.
 
 | Function | Returns |
 |---|---|
@@ -74,6 +79,22 @@ make compare_faiss bench   # against faiss-cpu; needs uv
 ```
 
 See [DEVELOPMENT.md](DEVELOPMENT.md).
+
+## The browser demo
+
+`web/` is a static page: `duckdb.js` starts DuckDB-WASM (the build of DuckDB v2.0.0) with unsigned
+extensions allowed and loads `emeans.duckdb_extension.wasm`, the `wasm_eh` build from the distribution
+pipeline; `demo-core.js` holds the logic (`npm test`) and `demo.js` the page. The Pages workflow publishes
+it after every successful build on `main`. To run it locally, put the `wasm_eh` build next to the files
+and serve the directory:
+
+```sh
+gh run download <run-id> -n emeans-v2.0.0-extension-wasm_eh -D web/
+python3 -m http.server -d web 8000   # http://localhost:8000
+```
+
+In the browser the extension runs on one thread, without Accelerate: 10,000 vectors of dimension 768
+into 64 clusters take about 1 s in Chromium on an M5 Pro.
 
 ## Licence
 
