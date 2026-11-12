@@ -64,25 +64,24 @@ argument once in bind and caches the norms, so the hot path is a plain n × k ×
 5. Done: the blocked kernel, spherical, `emeans_assign` reusing prepared centroids within a chunk, the
    budget setting (phase 3). Not done: `FLOAT[d]` output, because the stable C API cannot set a return
    type at bind (cast in SQL instead); folding constant centroids at bind, because asking for a bind
-   argument fails for scalar subqueries; and threads inside one call, see below.
-6. Submission to `duckdb/community-extensions`, 2.0 only, like `cpt`.
+   argument fails for scalar subqueries.
+6. Done: threads inside one call (`src/core/parallel.c`: POSIX threads, Win32 threads, one thread in
+   WASM), used only for batches with at least 4 million units of work per thread, and Accelerate's sgemm
+   for the kernel on macOS. `emeans()` now beats NumpyEmeans on an M5 Pro (docs/BENCHMARK.md).
+7. GPU, as a separate build that users choose: the community extension stays CPU-only, and a second
+   build adds a GPU backend for the kernel (MLX or Metal on Apple silicon, CUDA elsewhere). e-means makes
+   many sequential steps with small batches, so per-step launch overhead matters; the reference needed
+   custom Triton and CuTe kernels for it.
+8. Submission to `duckdb/community-extensions`, and a DuckDB-WASM demo.
 
 Later, if wanted: an aggregate `emeans_agg(vector, k)` (buffers rows in the state, runs the algorithm
 in finalize; the EMA is order-dependent, so combine concatenates), a DuckDB-WASM 2.0 build for a
 browser demo, and an "IVF-Flat in SQL" example where `emeans_assign` gives the partition key.
 
-## Threads inside one call (open)
-
-DuckDB runs one `emeans()` call on one thread; many calls (`GROUP BY`) already run in parallel. Splitting
-a call's assignment across threads would close most of the remaining 2.5× at d = 128, but needs pthreads
-on POSIX, Win32 threads for the MSVC build and a single-threaded path for WASM, and it oversubscribes the
-cores when DuckDB is already running other calls. It needs a decision before it is built.
-
 ## Risks
 
-- Speed against FAISS: FAISS uses BLAS. A blocked C loop on one thread is maybe 3 to 10 times slower;
-  for n = 1M, k = 1000, d = 128 that is about 10⁹ × 128 multiply-adds per pass, 5 to 10 s on one core,
-  and e-means needs about 2 passes.
+- Speed against FAISS: settled on macOS (docs/BENCHMARK.md). On Linux the portable kernel has not been
+  measured against FAISS with OpenBLAS or MKL.
 - Memory: the `list(embedding)` path holds the data once in DuckDB and once as float32 in the
   function; 10M × 128 is 10 GB + 5 GB.
 - Reference drift: blog, abstract and code disagree on the speed-up figures and on the scaling-law

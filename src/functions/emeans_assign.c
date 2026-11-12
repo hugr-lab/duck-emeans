@@ -50,7 +50,7 @@ static int prepare_kernel(prepared *pc, emeans_kernel *kn, char *err) {
 	    emeans_buffer_reserve(&pc->bias, (size_t)pc->k, err)) {
 		return 1;
 	}
-	*kn = (emeans_kernel) {pc->ct.data, pc->bias.data, pc->k, pc->d, pc->inner_product};
+	emeans_kernel_init(kn, pc->ct.data, pc->bias.data, pc->k, pc->d, pc->inner_product);
 	for (int64_t j = 0; j < pc->k; j++) {
 		float *c = pc->centroids.data + j * pc->d;
 		if (pc->inner_product) {
@@ -71,7 +71,7 @@ typedef struct {
 	emeans_kernel kn;
 	duckdb_list_entry key; // the list entry they came from
 	int have;
-	float scratch[EMEANS_KERNEL_SCRATCH];
+	emeans_buffer scratch; // the kernel's, sized for the dimension
 } assign_work;
 
 // The row's centroids, prepared for the kernel; reused while rows point at the same list entry.
@@ -87,7 +87,7 @@ static int row_centroids(duckdb_vector cents, idx_t row, assign_work *w, char *e
 	}
 	w->key = e;
 	w->have = 1;
-	return 0;
+	return emeans_buffer_reserve(&w->scratch, (size_t)emeans_kernel_scratch(w->pc.d), err);
 }
 
 static int assign_row(duckdb_data_chunk input, idx_t row, assign_work *w, int32_t *label, double *score,
@@ -107,7 +107,7 @@ static int assign_row(duckdb_data_chunk input, idx_t row, assign_work *w, int32_
 		return ROW_ERROR;
 	}
 	const int64_t first = 0;
-	emeans_kernel_nearest(&w->kn, w->vector.data, &first, 1, label, w->scratch);
+	emeans_kernel_nearest(&w->kn, w->vector.data, &first, 1, label, w->scratch.data);
 	const float *c = pc->centroids.data + *label * d;
 	*score = pc->inner_product ? emeans_dot(w->vector.data, c, d) : emeans_sq_dist(w->vector.data, c, d);
 	return ROW_OK;
@@ -139,6 +139,7 @@ static void assign_chunk(duckdb_function_info info, duckdb_data_chunk input, duc
 	if (w) {
 		emeans_buffer_free(&w->vector);
 		prepared_free(&w->pc);
+		emeans_buffer_free(&w->scratch);
 		free(w);
 	}
 }

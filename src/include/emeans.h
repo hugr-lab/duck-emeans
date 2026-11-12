@@ -27,6 +27,8 @@ typedef struct {
 	const float *init;       // k x d initial centroids, or NULL (default) for k distinct random rows
 	double max_work;         // limit on rows x k x d summed over all passes; 0 (default) = none
 	int spherical;           // assign by the largest inner product with the centroid directions (default 0)
+	int threads;             // threads for the assignment of a large batch (default 1); the result does not
+	                         // depend on it
 } emeans_params;
 
 void emeans_default_params(emeans_params *p);

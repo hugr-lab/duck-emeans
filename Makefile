@@ -30,7 +30,12 @@ test: test_debug
 test_debug: test_extension_debug
 test_release: test_extension_release
 
-CORE_SOURCES := src/core/recipe.c src/core/rng.c src/core/assign.c src/core/emeans.c
+CORE_SOURCES := src/core/recipe.c src/core/rng.c src/core/assign.c src/core/parallel.c src/core/emeans.c
+
+# On macOS the kernel's dot products go to Accelerate (src/core/assign.c), as in the extension build.
+ifeq ($(shell uname -s),Darwin)
+CORE_FLAGS := -DEMEANS_USE_ACCELERATE -framework Accelerate
+endif
 
 # Standalone C tests of src/core under AddressSanitizer + UndefinedBehaviorSanitizer (no DuckDB needed).
 # EMEANS_FAULT_INJECTION lets the test fail every allocation in turn (src/include/emeans_alloc.h).
@@ -38,7 +43,8 @@ CORE_TEST_BIN := build/test_core
 test_core:
 	@mkdir -p build
 	$(CC) -std=c11 -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer \
-		-Wall -Wextra -DEMEANS_FAULT_INJECTION -Isrc/include test/c/test_core.c $(CORE_SOURCES) -lm -o $(CORE_TEST_BIN)
+		-Wall -Wextra -pthread -DEMEANS_FAULT_INJECTION -Isrc/include test/c/test_core.c $(CORE_SOURCES) $(CORE_FLAGS) \
+		-lm -o $(CORE_TEST_BIN)
 	$(CORE_TEST_BIN)
 
 # Concurrency test of src/core under ThreadSanitizer: 8 threads resolve recipes from one shared parameter
@@ -47,7 +53,7 @@ THREADS_TEST_BIN := build/test_threads
 test_threads:
 	@mkdir -p build
 	$(CC) -std=c11 -g -O1 -fsanitize=thread -fno-omit-frame-pointer -Wall -Wextra -pthread \
-		-Isrc/include test/c/test_threads.c $(CORE_SOURCES) -lm -o $(THREADS_TEST_BIN)
+		-Isrc/include test/c/test_threads.c $(CORE_SOURCES) $(CORE_FLAGS) -lm -o $(THREADS_TEST_BIN)
 	TSAN_OPTIONS=halt_on_error=1 $(THREADS_TEST_BIN)
 
 # Validation against the reference e-means in faiss-cpu, and the benchmark (manual, not CI gating).

@@ -2,8 +2,8 @@
 """Benchmark: emeans() against faiss-cpu's NumpyEmeans and Lloyd (faiss.Kmeans, 25 iterations). make bench.
 
 Gaussian mixtures as in test/python/compare_faiss.py, nepochs = 2, seed 1. Each time is the median of
-REPEATS runs. NumpyEmeans and Lloyd run on all cores (FAISS uses OpenMP and BLAS) and on one; emeans()
-is one call, which DuckDB runs on one thread. The objective is the mean squared distance of every point
+REPEATS runs. emeans() runs with emeans_threads = 1 and = all cores; NumpyEmeans and Lloyd with FAISS's
+OpenMP threads at all cores and at one (their BLAS ignores that count). The objective is the mean squared distance of every point
 to its nearest final centroid. Prints a Markdown table for docs/BENCHMARK.md.
 """
 
@@ -57,15 +57,25 @@ def row(label, x, seconds, centroids):
     return f"| {label} | {seconds:.2f} | {objective(x, centroids):.4f} |"
 
 
+def thread_label(name, threads):
+    return f"{name}, {threads} thread{'s' if threads > 1 else ''}"
+
+
+def faiss_rows(x, k, threads):
+    faiss.omp_set_num_threads(threads)
+    return [row(thread_label("NumpyEmeans", threads), x, *timed(reference(x, k))),
+            row(thread_label("Lloyd 25 iterations", threads), x, *timed(lloyd(x, k)))]
+
+
 def bench_shape(con, n, d, k, cores):
     x = gaussian_mixture(n, d, 2 * k, seed=d)
     register_points(con, x)
     lines = [f"\n**n = {n:,}, d = {d}, k = {k}**\n", "| run | seconds | objective |", "|---|---:|---:|"]
-    lines.append(row("emeans(), 1 thread", x, *timed(ours(con, k))))
-    for threads in (cores, 1):
-        faiss.omp_set_num_threads(threads)
-        lines.append(row(f"NumpyEmeans, {threads} thread{'s' if threads > 1 else ''}", x, *timed(reference(x, k))))
-        lines.append(row(f"Lloyd 25 iterations, {threads} thread{'s' if threads > 1 else ''}", x, *timed(lloyd(x, k))))
+    con.sql("SET emeans_threads = 1")
+    lines.append(row(thread_label("emeans()", 1), x, *timed(ours(con, k))))
+    con.sql(f"SET emeans_threads = {cores}")
+    lines.append(row(thread_label("emeans()", cores), x, *timed(ours(con, k))))
+    lines += faiss_rows(x, k, cores) + faiss_rows(x, k, 1)
     faiss.omp_set_num_threads(cores)
     print("\n".join(lines), flush=True)
 

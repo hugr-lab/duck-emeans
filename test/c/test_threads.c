@@ -3,7 +3,8 @@
 // DuckDB calls a scalar function from many threads at once. Eight threads resolve recipes from one
 // shared, read-only parameter table, and then cluster one shared, read-only matrix with two seeds, and
 // compare every result with a single-threaded reference. The core must have no mutable global state
-// for this to pass.
+// for this to pass. Last, one fit splits each batch's assignment across 4 threads of its own, and must
+// match the same fit on one thread bit for bit.
 
 #include "emeans.h"
 #include "recipe.h"
@@ -127,6 +128,32 @@ static int run_fits(void) {
 	return 0;
 }
 
+// One batch of 6000 x 64 x 32 = 12.3e6 units of work: emeans_fit splits it into 3 parts.
+static int run_split_fit(void) {
+	enum { N = 6000, D = 32, K = 64 };
+	static float x[N * D], c1[K * D], c4[K * D];
+	static int32_t l1[N], l4[N];
+	double o1[2], o4[2];
+	for (int i = 0; i < N * D; i++) {
+		x[i] = (float)sin(i * 0.311) + (float)((i / D) % 7) * 3.0f;
+	}
+	emeans_params p;
+	emeans_default_params(&p);
+	p.nepochs = 2;
+	p.batch_size = N;
+	char err[EMEANS_ERR_LEN];
+	emeans_output one = {c1, l1, o1, 0, {0}}, four = {c4, l4, o4, 0, {0}};
+	int rc = emeans_fit(x, N, D, K, &p, &one, err);
+	p.threads = 4;
+	rc |= emeans_fit(x, N, D, K, &p, &four, err);
+	if (rc || memcmp(c1, c4, sizeof(c1)) || memcmp(l1, l4, sizeof(l1)) || o1[1] != o4[1]) {
+		fprintf(stderr, "a fit split across 4 threads differs from one thread\n");
+		return 1;
+	}
+	printf("test_threads: a fit split across 4 threads matches one thread\n");
+	return 0;
+}
+
 // Deterministic parameter table: n from 2 to ~2^20, k up to n, d from 1 to 256, T from 0.5 to 8.
 static void fill_cases(recipe_case *cases) {
 	uint32_t state = 12345;
@@ -173,5 +200,5 @@ int main(void) {
 		return 1;
 	}
 	printf("test_threads: %d recipes on %d threads match the reference\n", N_CASES, N_THREADS);
-	return run_fits();
+	return run_fits() || run_split_fit();
 }

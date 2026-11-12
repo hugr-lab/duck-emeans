@@ -46,9 +46,9 @@ FROM chunks c JOIN topics t USING (doc_id);
 
 Against faiss-cpu's `NumpyEmeans` on Gaussian mixtures (n = 100,000, k = 256, 2 epochs), the final
 objective is within 0.5% (−0.43% at d = 16, +0.38% at d = 128, −0.30% spherical), both beat Lloyd at 25
-iterations, and the recipe matches for 220 shapes. `emeans()` takes 1.1× to 2.5× FAISS's time on one
-DuckDB thread (6.3 s for a million 128-d vectors into 256 clusters); FAISS uses BLAS on the Apple matrix
-units. See [docs/BENCHMARK.md](docs/BENCHMARK.md).
+iterations, and the recipe matches for 220 shapes. On an Apple M5 Pro, `emeans()` clusters a million
+128-d vectors into 256 clusters in 1.23 s on 18 threads (2.44 s on one), against 2.52 s for FAISS; on
+macOS it uses Accelerate for the dot products. See [docs/BENCHMARK.md](docs/BENCHMARK.md).
 
 ## Limits
 
@@ -58,6 +58,10 @@ A running scalar function cannot be interrupted, so one `emeans()` call does at 
 ```sql
 SET emeans_max_work = 1e12;
 ```
+
+A call splits a large batch across up to `emeans_threads` threads (default 0, meaning DuckDB's `threads`
+setting). Small calls, such as one per group in a `GROUP BY`, stay on one thread. The result does not
+depend on the thread count.
 
 ## Building
 

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Threads: a large batch's assignment is split across up to `emeans_threads` threads (default: DuckDB's
+  `threads` setting), with identical results on any number. POSIX threads, Win32 threads, and one thread
+  in WASM.
+- macOS: the kernel's dot products go to Accelerate's `cblas_sgemm`. A million 128-d vectors into 256
+  clusters: 1.23 s on 18 threads, 2.44 s on one (was 6.30 s); FAISS takes 2.52 s.
 - A blocked distance kernel (8 rows × 256 centroids, centroids transposed, vectorised by the compiler),
   with the chosen centroid's distance recomputed exactly: `emeans()` is 2.3× to 5.4× faster (6.3 s for a
   million 128-d vectors into 256 clusters, was 33.8 s).

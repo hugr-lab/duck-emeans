@@ -6,7 +6,8 @@
 // Clusters the vectors in x (LIST(LIST(FLOAT)) or LIST(LIST(DOUBLE)), one list per row, typically built
 // with list(embedding ORDER BY id)) into k clusters. labels are 1-based, so centroids[labels[i]] is row
 // i's centroid; a row the passes never reached (nepochs < 1) has a NULL label. NULL x or k gives NULL;
-// NULL nepochs means 5, NULL seed 1234. The work is capped by SET emeans_max_work.
+// NULL nepochs means 5, NULL seed 1234. The work is capped by SET emeans_max_work; a large batch is
+// assigned on up to emeans_threads threads (0, the default, means DuckDB's threads setting).
 
 #include "duckdb_extension.h"
 
@@ -22,65 +23,82 @@ DUCKDB_EXTENSION_EXTERN
 
 #define MAX_WORK_SETTING "emeans_max_work"
 #define MAX_WORK_DEFAULT 1e11
+#define THREADS_SETTING "emeans_threads"
 #define N_FIELDS 6
 
 enum { ROW_OK = 0, ROW_NULL = 1, ROW_ERROR = 2 };
 
 //===--------------------------------------------------------------------===//
-// emeans_max_work
+// emeans_max_work, emeans_threads
 //===--------------------------------------------------------------------===//
 
-bool emeans_register_settings(duckdb_connection connection) {
+static bool register_option(duckdb_connection connection, const char *name, duckdb_type type_id, duckdb_value def,
+                            const char *description) {
 	duckdb_config_option option = duckdb_create_config_option();
-	duckdb_config_option_set_name(option, MAX_WORK_SETTING);
-	duckdb_logical_type type = duckdb_create_logical_type(DUCKDB_TYPE_DOUBLE);
+	duckdb_config_option_set_name(option, name);
+	duckdb_logical_type type = duckdb_create_logical_type(type_id);
 	duckdb_config_option_set_type(option, type);
 	duckdb_destroy_logical_type(&type);
-	duckdb_value def = duckdb_create_double(MAX_WORK_DEFAULT);
 	duckdb_config_option_set_default_value(option, def);
 	duckdb_destroy_value(&def);
-	duckdb_config_option_set_description(
-	    option, "Maximum work per emeans() call, in rows x k x d summed over all passes; 0 = no limit. Bounds "
-	            "run time, since a running call cannot be interrupted.");
+	duckdb_config_option_set_description(option, description);
 	bool ok = duckdb_register_config_option(connection, option) == DuckDBSuccess;
 	duckdb_destroy_config_option(&option);
 	return ok;
 }
 
-static void *copy_double(void *data) {
-	double *copy = (double *)malloc(sizeof(double));
+bool emeans_register_settings(duckdb_connection connection) {
+	return register_option(connection, MAX_WORK_SETTING, DUCKDB_TYPE_DOUBLE, duckdb_create_double(MAX_WORK_DEFAULT),
+	                       "Maximum work per emeans() call, in rows x k x d summed over all passes; 0 = no limit. "
+	                       "Bounds run time, since a running call cannot be interrupted.") &&
+	       register_option(connection, THREADS_SETTING, DUCKDB_TYPE_BIGINT, duckdb_create_int64(0),
+	                       "Threads one emeans() call may use to assign a large batch; 0 = the threads setting. "
+	                       "The result does not depend on it.");
+}
+
+typedef struct {
+	double max_work;
+	int threads;
+} cluster_settings;
+
+static void *copy_settings(void *data) {
+	cluster_settings *copy = (cluster_settings *)malloc(sizeof(cluster_settings));
 	if (copy) {
-		*copy = *(double *)data;
+		*copy = *(cluster_settings *)data;
 	}
 	return copy;
 }
 
-static double setting_value(duckdb_bind_info info) {
-	double max_work = MAX_WORK_DEFAULT;
-	duckdb_client_context context = NULL;
-	duckdb_scalar_function_get_client_context(info, &context);
-	if (context) {
-		duckdb_config_option_scope scope;
-		duckdb_value value = duckdb_client_context_get_config_option(context, MAX_WORK_SETTING, &scope);
-		if (value) {
-			max_work = duckdb_get_double(value);
-			duckdb_destroy_value(&value);
-		}
-		duckdb_destroy_client_context(&context);
-	}
-	return max_work;
+// A setting's value as a double, or def if it is not set or there is no context.
+static double setting_double(duckdb_client_context context, const char *name, double def) {
+	duckdb_config_option_scope scope;
+	duckdb_value value = context ? duckdb_client_context_get_config_option(context, name, &scope) : NULL;
+	double result = value ? duckdb_get_double(value) : def;
+	duckdb_destroy_value(&value);
+	return result;
 }
 
-// Bind: capture emeans_max_work for this query.
-static void BindMaxWork(duckdb_bind_info info) {
-	double *data = (double *)malloc(sizeof(double));
+// emeans_threads, 0 meaning DuckDB's threads setting, clamped to [1, 64].
+static int thread_count(duckdb_client_context context) {
+	double threads = setting_double(context, THREADS_SETTING, 0);
+	threads = threads > 0 ? threads : setting_double(context, "threads", 1);
+	return threads < 1 ? 1 : (threads > 64 ? 64 : (int)threads);
+}
+
+// Bind: capture emeans_max_work and the thread count for this query.
+static void BindSettings(duckdb_bind_info info) {
+	cluster_settings *data = (cluster_settings *)malloc(sizeof(cluster_settings));
 	if (!data) {
 		duckdb_scalar_function_bind_set_error(info, "emeans: out of memory");
 		return;
 	}
-	*data = setting_value(info);
+	duckdb_client_context context = NULL;
+	duckdb_scalar_function_get_client_context(info, &context);
+	data->max_work = setting_double(context, MAX_WORK_SETTING, MAX_WORK_DEFAULT);
+	data->threads = thread_count(context);
+	duckdb_destroy_client_context(&context);
 	duckdb_scalar_function_set_bind_data(info, data, free);
-	duckdb_scalar_function_set_bind_data_copy(info, copy_double);
+	duckdb_scalar_function_set_bind_data_copy(info, copy_settings);
 }
 
 //===--------------------------------------------------------------------===//
@@ -97,14 +115,15 @@ static void *arg_data(duckdb_data_chunk input, idx_t col) {
 }
 
 typedef struct {
-	double max_work;
+	cluster_settings settings;
 	int spherical;
 	const char *name;
 } cluster_mode;
 
 static int read_params(duckdb_data_chunk input, idx_t row, const cluster_mode *mode, emeans_params *p, char *err) {
 	emeans_default_params(p);
-	p->max_work = mode->max_work;
+	p->max_work = mode->settings.max_work;
+	p->threads = mode->settings.threads;
 	p->spherical = mode->spherical;
 	if (arg_present(input, 2, row)) {
 		p->nepochs = ((const double *)arg_data(input, 2))[row];
@@ -198,7 +217,7 @@ static int cluster_row(duckdb_data_chunk input, idx_t row, const cluster_mode *m
 
 static void cluster_chunk(duckdb_function_info info, duckdb_data_chunk input, duckdb_vector output, int spherical) {
 	idx_t count = duckdb_data_chunk_get_size(input);
-	cluster_mode mode = {*(const double *)duckdb_scalar_function_get_bind_data(info), spherical,
+	cluster_mode mode = {*(const cluster_settings *)duckdb_scalar_function_get_bind_data(info), spherical,
 	                     spherical ? "emeans_spherical" : "emeans"};
 	emeans_buffer x = {NULL, 0};
 	char err[EMEANS_ERR_LEN];
@@ -250,7 +269,7 @@ static bool add_overloads(duckdb_scalar_function_set set, const char *name, duck
 	                                 duckdb_create_logical_type(DUCKDB_TYPE_BIGINT)};
 	bool ok = true;
 	for (idx_t n_params = 2; n_params <= 4; n_params++) {
-		ok = ok && emeans_add_overload(set, name, params, n_params, ret, fn, BindMaxWork);
+		ok = ok && emeans_add_overload(set, name, params, n_params, ret, fn, BindSettings);
 	}
 	for (int i = 0; i < 4; i++) {
 		duckdb_destroy_logical_type(&params[i]);

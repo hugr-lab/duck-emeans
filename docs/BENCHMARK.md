@@ -30,33 +30,42 @@ which is the paper's claim.
 
 Assignment. `emeans_assign` against `faiss.knn` (L2), and `emeans_assign_spherical` against `faiss.knn`
 (inner product), for all 100,000 points of the d = 128 sets and their 256 centroids: the same centroid
-for every point. Each took 0.4 s.
+for every point. Each took 0.2 s.
 
 ## Speed (`make bench`)
 
-Median of 3 runs, nepochs = 2, seed 1. `emeans()` is one SQL call, which DuckDB runs on one thread.
+Median of 3 runs, nepochs = 2, seed 1. `emeans()` is one SQL call; `emeans_threads` sets how many threads
+it may use for a large batch, and the result is the same bits on any number.
 
-| n | d | k | emeans() | NumpyEmeans | Lloyd, 25 iterations | emeans() / NumpyEmeans |
+| n | d | k | emeans(), 1 thread | emeans(), 18 threads | NumpyEmeans | Lloyd, 25 iterations |
 |---:|---:|---:|---:|---:|---:|---:|
-| 100,000 | 16 | 256 | 0.13 s | 0.12 s | 0.51 s | 1.1× |
-| 100,000 | 128 | 256 | 0.60 s | 0.25 s | 0.29 s | 2.4× |
-| 1,000,000 | 16 | 256 | 1.32 s | 0.52 s | 5.10 s | 2.5× |
-| 1,000,000 | 128 | 256 | 6.30 s | 2.48 s | 2.68 s | 2.5× |
+| 100,000 | 16 | 256 | 0.09 s | 0.09 s | 0.13 s | 0.51 s |
+| 100,000 | 128 | 256 | 0.21 s | 0.12 s | 0.25 s | 0.29 s |
+| 1,000,000 | 16 | 256 | 0.83 s | 0.35 s | 0.55 s | 5.10 s |
+| 1,000,000 | 128 | 256 | 2.44 s | 1.23 s | 2.52 s | 2.68 s |
 
-NumpyEmeans and Lloyd ran with FAISS's default of 18 OpenMP threads. With `omp_set_num_threads(1)`
-NumpyEmeans took 1.31 s at n = 1,000,000, d = 16, the same as `emeans()`, and 2.50 s at d = 128: FAISS's
-distances go to Accelerate's sgemm, which runs on the M5's matrix units whatever the OpenMP thread
-count. So at d = 128 the gap is a vectorised C loop against a BLAS kernel on dedicated hardware.
+NumpyEmeans and Lloyd ran with FAISS's default of 18 OpenMP threads; with one OpenMP thread NumpyEmeans
+was about as fast at d = 128 (2.50 s), because its distances go to Accelerate's sgemm, which runs on the
+M5's matrix units whatever the OpenMP thread count.
 
-The distances are a blocked kernel (`src/core/assign.c`): 8 rows against 256 centroids at a time, as
-‖c‖² − 2 x·c with the centroids stored transposed, so the inner loop has independent accumulators and the
-compiler vectorises it. The distance of the chosen centroid is then recomputed exactly in double, so the
-objectives are exact. Before the kernel, `emeans()` took 0.30, 3.26, 3.02 and 33.8 s on the four rows
-above.
+On macOS `emeans()` now does the same: the kernel hands the dot products of 64 rows against 1024 centroids
+to `cblas_sgemm` from Accelerate, a system framework, so the extension needs no extra library. On Linux,
+Windows and in WASM it uses the portable blocked loop (8 rows × 256 centroids, centroids transposed,
+vectorised by the compiler). The distance to the chosen centroid is recomputed exactly in double either
+way, so the objectives are exact.
+
+A batch is split across threads only when it has at least 4 million units of work (rows × k × d) per
+thread, so the many small calls of a `GROUP BY` stay on DuckDB's threads and do not oversubscribe the
+cores. At d ≤ 16 the quality law picks small batches (4,096 rows at n = 1,000,000), which limits what
+threads can do; FAISS has the same limit.
+
+History of the n = 1,000,000, d = 128 row on this machine: 33.8 s with the first plain loop, 6.30 s with
+the portable kernel, 2.44 s with Accelerate, 1.23 s with Accelerate on 18 threads. The portable kernel's
+speed on Linux has not been measured here.
 
 `emeans_assign` prepares the centroids for the kernel once per distinct list in a chunk of rows. When
 they are a constant for the query (a literal, a parameter, a scalar subquery, a one-row cross join),
-that is once per 2048 rows, and 100,000 rows against 256 × 128 centroids take 0.4 s. When every row
+that is once per 2048 rows, and 100,000 rows against 256 × 128 centroids take 0.2 s. When every row
 carries its own copy, as after a join with a table of per-group centroids, they are prepared for every
 row: 8 s for the same 100,000 rows.
 

@@ -2,6 +2,7 @@
 
 #include "assign.h"
 #include "emeans_alloc.h"
+#include "parallel.h"
 #include "rng.h"
 
 #include <math.h>
@@ -15,6 +16,7 @@
 #define INIT_STREAM 1               // PCG stream of the initial-centroid draw
 #define PASS_STREAM 2               // ... of the pass permutations
 #define REVIVE_STREAM 3             // ... of the donor sampling
+#define WORK_PER_THREAD 4e6         // rows x k x d below which another thread costs more than it saves
 
 typedef struct {
 	double key;
@@ -36,7 +38,7 @@ typedef struct {
 	int32_t *touched;     // clusters with n_j > 0 in the current batch, k
 	int32_t *targets;     // dead clusters at a revival, k
 	float *unit;          // spherical: the centroid directions, k x d
-	float *scratch;       // the kernel's block of dot products
+	float *scratch;       // the kernel's scratch, one block per thread
 	emeans_kernel kernel; // ct (d x k) and bias (k) of the assignment centroids
 } workspace;
 
@@ -45,6 +47,8 @@ typedef struct {
 	int64_t n, d, k;
 	uint32_t seed;
 	int spherical;
+	int threads;
+	int64_t scratch_floats; // per thread
 	emeans_recipe recipe;
 	emeans_output *out;
 	workspace ws;
@@ -63,6 +67,7 @@ void emeans_default_params(emeans_params *p) {
 	p->init = NULL;
 	p->max_work = 0;
 	p->spherical = 0;
+	p->threads = 1;
 }
 
 //===--------------------------------------------------------------------===//
@@ -132,11 +137,11 @@ static int prepare(run_state *s, const emeans_params *p, char *err) {
 }
 
 // Ordered by alignment: 8-byte arrays, the 16-byte keys, then the 4-byte arrays.
-static double workspace_bytes(int64_t n, int64_t d, int64_t k, int64_t b) {
-	double kd = (double)k * (double)d;
-	return 8.0 * (2.0 * kd + (double)k + (double)b) + 8.0 * (2.0 * (double)k + (double)n) +
-	       (double)sizeof(donor_key) * (double)k + 4.0 * ((double)b + 2.0 * (double)k) +
-	       4.0 * (3.0 * kd + (double)k + EMEANS_KERNEL_SCRATCH);
+static double workspace_bytes(const run_state *s, int64_t b) {
+	double n = (double)s->n, k = (double)s->k, kd = k * (double)s->d;
+	double scratch = (double)s->threads * (double)s->scratch_floats;
+	return 8.0 * (2.0 * kd + k + (double)b) + 8.0 * (2.0 * k + n) + (double)sizeof(donor_key) * k +
+	       4.0 * ((double)b + 2.0 * k) + 4.0 * (2.0 * kd + scratch) + 4.0 * (kd + k);
 }
 
 static void *carve(char **cursor, int64_t count, size_t size) {
@@ -145,8 +150,10 @@ static void *carve(char **cursor, int64_t count, size_t size) {
 	return p;
 }
 
-static int workspace_alloc(workspace *ws, int64_t n, int64_t d, int64_t k, int64_t b) {
-	double bytes = workspace_bytes(n, d, k, b);
+static int workspace_alloc(run_state *s, int64_t b) {
+	workspace *ws = &s->ws;
+	int64_t n = s->n, d = s->d, k = s->k;
+	double bytes = workspace_bytes(s, b);
 	char *cursor = bytes < (double)(SIZE_MAX / 2) ? emeans_calloc(1, (size_t)bytes) : NULL;
 	ws->block = cursor;
 	if (!cursor) {
@@ -164,11 +171,10 @@ static int workspace_alloc(workspace *ws, int64_t n, int64_t d, int64_t k, int64
 	ws->touched = carve(&cursor, k, sizeof(int32_t));
 	ws->targets = carve(&cursor, k, sizeof(int32_t));
 	ws->unit = carve(&cursor, k * d, sizeof(float));
-	ws->scratch = carve(&cursor, EMEANS_KERNEL_SCRATCH, sizeof(float));
-	ws->kernel.ct = carve(&cursor, k * d, sizeof(float));
-	ws->kernel.bias = carve(&cursor, k, sizeof(float));
-	ws->kernel.k = k;
-	ws->kernel.d = d;
+	ws->scratch = carve(&cursor, s->threads * s->scratch_floats, sizeof(float));
+	float *ct = carve(&cursor, k * d, sizeof(float));
+	float *bias = carve(&cursor, k, sizeof(float));
+	emeans_kernel_init(&ws->kernel, ct, bias, k, d, s->spherical);
 	return 0;
 }
 
@@ -187,15 +193,42 @@ static void refresh(run_state *s, int64_t j) {
 	emeans_kernel_set(&s->ws.kernel, j, c);
 }
 
-// Labels from the kernel; each distance recomputed exactly for the centroid chosen.
-static void assign_batch(run_state *s, const int64_t *rows, int64_t count) {
+typedef struct {
+	run_state *s;
+	const int64_t *rows;
+	int64_t count;
+} batch_task;
+
+// Labels from the kernel for rows [lo, hi) of the batch; each distance recomputed exactly for the centroid
+// chosen. Ranges are disjoint, and the kernel and centroids are only read, so parts can run concurrently.
+static void assign_part(void *arg, int part, int parts) {
+	const batch_task *t = arg;
+	run_state *s = t->s;
 	workspace *ws = &s->ws;
-	emeans_kernel_nearest(&ws->kernel, s->x, rows, count, ws->batch_label, ws->scratch);
-	for (int64_t i = 0; i < count; i++) {
-		const float *row = s->x + rows[i] * s->d;
+	int64_t lo = t->count * part / parts, hi = t->count * (part + 1) / parts;
+	emeans_kernel_nearest(&ws->kernel, s->x, t->rows + lo, hi - lo, ws->batch_label + lo,
+	                      ws->scratch + part * s->scratch_floats);
+	for (int64_t i = lo; i < hi; i++) {
+		const float *row = s->x + t->rows[i] * s->d;
 		int64_t j = ws->batch_label[i];
 		ws->batch_dist[i] = s->spherical ? 2.0 - 2.0 * emeans_dot(row, ws->unit + j * s->d, s->d)
 		                                 : emeans_sq_dist(row, s->out->centroids + j * s->d, s->d);
+	}
+}
+
+// As many threads as the batch has work for: at least WORK_PER_THREAD each, and at most s->threads.
+static int batch_parts(const run_state *s, int64_t count) {
+	double by_work = (double)count * (double)s->k * (double)s->d / WORK_PER_THREAD;
+	return by_work < (double)s->threads ? (by_work < 1 ? 1 : (int)by_work) : s->threads;
+}
+
+static void assign_batch(run_state *s, const int64_t *rows, int64_t count) {
+	batch_task t = {s, rows, count};
+	int parts = batch_parts(s, count);
+	if (parts > 1) {
+		emeans_parallel_for(assign_part, &t, parts);
+	} else {
+		assign_part(&t, 0, 1);
 	}
 }
 
@@ -438,12 +471,20 @@ int emeans_fit(const float *x, int64_t n, int64_t d, int64_t k, const emeans_par
 	if (!x || !p || !out) {
 		return emeans_error(err, "x, params and output must not be NULL");
 	}
-	run_state s = {.x = x, .n = n, .d = d, .k = k, .seed = p->seed, .spherical = p->spherical != 0, .out = out};
+	run_state s = {.x = x,
+	               .n = n,
+	               .d = d,
+	               .k = k,
+	               .seed = p->seed,
+	               .spherical = p->spherical != 0,
+	               .threads = p->threads < 1 ? 1 : (p->threads > EMEANS_MAX_THREADS ? EMEANS_MAX_THREADS : p->threads),
+	               .scratch_floats = emeans_kernel_scratch(d),
+	               .out = out};
 	int rc = prepare(&s, p, err);
 	if (rc != EMEANS_OK) {
 		return rc;
 	}
-	if (workspace_alloc(&s.ws, n, d, k, s.recipe.batch_size)) {
+	if (workspace_alloc(&s, s.recipe.batch_size)) {
 		emeans_error(err, "out of memory");
 		return EMEANS_OOM;
 	}
