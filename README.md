@@ -69,6 +69,10 @@ Labels start at 1, so `centroids[cluster]` is the row's centroid. Other differen
 is no `max_radius`, and the result of a group does not depend on the order of its rows (the points are
 sorted before clustering).
 
+Against PostGIS 3.7 the DuckDB side is 2× to 10× faster, and handles the antimeridian, NULLs and row
+order differently; at larger k its clusters have 1% to 25% more variance. See
+[docs/POSTGIS.md](docs/POSTGIS.md) for the full comparison and the figure.
+
 ### Why the cluster id takes a second call
 
 `emeans_agg` is an ordinary aggregate, and DuckDB runs any aggregate as a window function: with
