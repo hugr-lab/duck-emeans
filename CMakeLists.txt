@@ -39,6 +39,7 @@ set(EXTENSION_SOURCES
         src/core/recipe.c
         src/core/rng.c
         src/core/assign.c
+        src/core/parallel.c
         src/core/emeans.c
         # SQL surface: vector I/O and function registration
         src/functions/vec_io.c
@@ -48,6 +49,19 @@ set(EXTENSION_SOURCES
         # Entrypoint
         src/emeans_extension.c
 )
+
+# Threads for the batch assignment (src/core/parallel.c), and on macOS Accelerate for the kernel's dot
+# products (src/core/assign.c). The WASM build has neither.
+function(emeans_link_platform target)
+    if (NOT DUCKDB_WASM_EXTENSION)
+        find_package(Threads REQUIRED)
+        target_link_libraries(${target} PRIVATE Threads::Threads)
+    endif()
+    if (APPLE AND NOT DUCKDB_WASM_EXTENSION)
+        target_compile_definitions(${target} PRIVATE EMEANS_USE_ACCELERATE)
+        target_link_libraries(${target} PRIVATE "-framework Accelerate")
+    endif()
+endfunction()
 
 # In-tree build as part of a DuckDB build (duckdb_extension_load(... SOURCE_DIR ...)).
 if(COMMAND build_static_extension_capi)
@@ -64,6 +78,7 @@ if(COMMAND build_static_extension_capi)
     build_static_extension_capi(${EXTENSION_NAME} ${TARGET_DUCKDB_VERSION_MAJOR} ${TARGET_DUCKDB_VERSION_MINOR} ${TARGET_DUCKDB_VERSION_PATCH} ${EXTENSION_SOURCES})
     foreach(_capi_target ${EXTENSION_NAME}_loadable_extension ${EXTENSION_NAME}_extension)
         target_include_directories(${_capi_target} PRIVATE src/include)
+        emeans_link_platform(${_capi_target})
     endforeach()
     return()
 endif()
@@ -90,6 +105,8 @@ target_include_directories(${EXTENSION_NAME} PRIVATE src/include)
 
 # Include DuckDB C API headers
 target_include_directories(${EXTENSION_NAME} PRIVATE duckdb_capi)
+
+emeans_link_platform(${EXTENSION_NAME})
 
 # libm for pow/log2/cos
 if (NOT WIN32 AND NOT DUCKDB_WASM_EXTENSION)

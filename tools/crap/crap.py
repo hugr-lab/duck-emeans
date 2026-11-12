@@ -26,7 +26,10 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BUILD = os.path.join(ROOT, "build", "crap")
 # Absolute, like cmake's paths, so llvm-cov sees one source file across all the binaries.
-CORE = [os.path.join(ROOT, f) for f in ("src/core/recipe.c", "src/core/rng.c", "src/core/assign.c", "src/core/emeans.c")]
+CORE = [os.path.join(ROOT, f) for f in ("src/core/recipe.c", "src/core/rng.c", "src/core/assign.c",
+                                       "src/core/parallel.c", "src/core/emeans.c")]
+# As in the Makefile and CMake: on macOS the kernel uses Accelerate.
+PLATFORM_FLAGS = ["-DEMEANS_USE_ACCELERATE", "-framework", "Accelerate"] if platform.system() == "Darwin" else []
 COVERAGE_FLAGS = ["-fprofile-instr-generate", "-fcoverage-mapping", "-O0", "-g"]
 SCORER = os.path.join(ROOT, "tools", "crap", "crap_cpp.py")
 
@@ -59,7 +62,7 @@ def core_tests():
     for test, defines in (("test_core", ["-DEMEANS_FAULT_INJECTION"]), ("test_threads", [])):
         binary = os.path.join(BUILD, test)
         run(["clang", "-std=c11", "-pthread", *COVERAGE_FLAGS, *defines, "-Isrc/include",
-             os.path.join(ROOT, f"test/c/{test}.c"), *CORE, "-lm", "-o", binary])
+             os.path.join(ROOT, f"test/c/{test}.c"), *CORE, *PLATFORM_FLAGS, "-lm", "-o", binary])
         run([binary], env=profile_env(test))
         binaries.append(binary)
     return binaries

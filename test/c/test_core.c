@@ -4,6 +4,7 @@
 
 #include "assign.h"
 #include "emeans.h"
+#include "parallel.h"
 #include "recipe.h"
 #include "rng.h"
 
@@ -254,8 +255,8 @@ static void test_assign(void) {
 //===--------------------------------------------------------------------===//
 
 typedef struct {
-	float centroids[64 * 8];
-	int32_t labels[512];
+	float centroids[64 * 32];
+	int32_t labels[8192];
 	double obj[16];
 	emeans_output out;
 	char err[EMEANS_ERR_LEN];
@@ -470,10 +471,10 @@ static void test_fit_out_of_memory(void) {
 // The blocked kernel, normalisation, the spherical variant
 //===--------------------------------------------------------------------===//
 
-// k = 300 crosses the 256-centroid block; 61 rows leave a partial 8-row block.
-static void test_kernel_matches_exact(void) {
-	enum { N = 61, D = 7, K = 300 };
-	static float x[N * D], c[K * D], ct[D * K], bias[K], scratch[EMEANS_KERNEL_SCRATCH];
+// k = 1100 crosses both the 256- and the 1024-centroid block; 61 rows leave partial 8- and 64-row blocks.
+static int kernel_disagreements(int use_blas) {
+	enum { N = 61, D = 7, K = 1100 };
+	static float x[N * D], c[K * D], ct[D * K], bias[K];
 	int64_t rows[N];
 	for (int i = 0; i < N * D; i++) {
 		x[i] = (float)sin(i * 0.37) * 3.0f;
@@ -481,7 +482,9 @@ static void test_kernel_matches_exact(void) {
 	for (int i = 0; i < K * D; i++) {
 		c[i] = (float)cos(i * 0.91) * 3.0f;
 	}
-	emeans_kernel kn = {ct, bias, K, D, 0};
+	emeans_kernel kn;
+	emeans_kernel_init(&kn, ct, bias, K, D, 0);
+	kn.use_blas = use_blas;
 	for (int j = 0; j < K; j++) {
 		emeans_kernel_set(&kn, j, c + j * D);
 	}
@@ -490,7 +493,9 @@ static void test_kernel_matches_exact(void) {
 	}
 	int32_t fast[N], exact[N];
 	double dist[N];
+	float *scratch = malloc((size_t)emeans_kernel_scratch(D) * sizeof(float));
 	emeans_kernel_nearest(&kn, x, rows, N, fast, scratch);
+	free(scratch);
 	emeans_assign(x, D, rows, N, c, K, exact, dist);
 	int differ = 0;
 	for (int i = 0; i < N; i++) {
@@ -498,10 +503,20 @@ static void test_kernel_matches_exact(void) {
 		double gap = emeans_sq_dist(x + rows[i] * D, c + fast[i] * D, D) - dist[i];
 		differ += fast[i] != exact[i] && gap > 1e-4 * dist[i];
 	}
-	CHECK(differ == 0, "%d rows assigned differently from the exact loop", differ);
+	return differ;
+}
+
+static void test_kernel_matches_exact(void) {
+	CHECK(kernel_disagreements(0) == 0, "portable kernel differs from the exact loop");
+	if (emeans_kernel_has_blas()) {
+		CHECK(kernel_disagreements(1) == 0, "Accelerate kernel differs from the exact loop");
+	}
+	CHECK(emeans_kernel_scratch(7) >= EMEANS_ROW_BLOCK * EMEANS_COL_BLOCK, "scratch");
 	// The last centroid wins for a row equal to it: bias 1, dots 1 and 0 against a = (1, 0) and (0, 1).
 	float two_c[] = {0, 1, 1, 0}, two_ct[4], two_bias[2], row[] = {1, 0};
-	emeans_kernel two = {two_ct, two_bias, 2, 2, 0};
+	float *scratch = malloc((size_t)emeans_kernel_scratch(2) * sizeof(float));
+	emeans_kernel two;
+	emeans_kernel_init(&two, two_ct, two_bias, 2, 2, 0);
 	emeans_kernel_set(&two, 0, two_c);
 	emeans_kernel_set(&two, 1, two_c + 2);
 	int64_t first = 0;
@@ -514,6 +529,47 @@ static void test_kernel_matches_exact(void) {
 	emeans_kernel_set(&two, 1, two_c + 2);
 	emeans_kernel_nearest(&two, row, &first, 1, &label, scratch);
 	CHECK(label == 1 && two_bias[0] == 0.0f && two_bias[1] == 0.0f, "inner product label %d", label);
+	free(scratch);
+}
+
+static void count_part(void *arg, int part, int parts) {
+	int *hits = arg;
+	hits[part] += parts;
+}
+
+static void test_parallel_for(void) {
+	// Every part runs once and sees the clamped part count: 5 parts, then 0 clamped to 1, 1000 to 64.
+	int hits[EMEANS_MAX_THREADS] = {0};
+	emeans_parallel_for(count_part, hits, 5);
+	CHECK(hits[0] == 5 && hits[4] == 5 && hits[5] == 0, "5 parts");
+	memset(hits, 0, sizeof(hits));
+	emeans_parallel_for(count_part, hits, 0);
+	CHECK(hits[0] == 1 && hits[1] == 0, "0 parts runs one");
+	memset(hits, 0, sizeof(hits));
+	emeans_parallel_for(count_part, hits, 1000);
+	CHECK(hits[0] == EMEANS_MAX_THREADS && hits[EMEANS_MAX_THREADS - 1] == EMEANS_MAX_THREADS, "clamped to 64");
+}
+
+// The assignment of a large batch is split across threads; the labels, centroids and objectives must be the
+// same bits on any number of threads. One batch of all 6000 rows: 6000 x 64 x 32 = 12.3e6 units, 3 parts.
+static void test_fit_threads_same_result(void) {
+	enum { N = 6000, D = 32, K = 64 };
+	float *x = malloc(sizeof(float) * N * D);
+	for (int i = 0; i < N * D; i++) {
+		x[i] = (float)sin(i * 0.311) + (float)((i / D) % 7) * 3.0f;
+	}
+	emeans_params p;
+	emeans_default_params(&p);
+	p.nepochs = 2;
+	p.batch_size = N;
+	static fit_result one, many;
+	CHECK(fit(x, N, D, K, &p, &one) == EMEANS_OK, "%s", one.err);
+	p.threads = 4;
+	CHECK(fit(x, N, D, K, &p, &many) == EMEANS_OK, "%s", many.err);
+	CHECK(memcmp(one.centroids, many.centroids, sizeof(float) * K * D) == 0 &&
+	          memcmp(one.labels, many.labels, sizeof(int32_t) * N) == 0 && one.obj[1] == many.obj[1],
+	      "1 and 4 threads give different results");
+	free(x);
 }
 
 static void test_normalize(void) {
@@ -582,6 +638,8 @@ int main(void) {
 	test_fit_errors();
 	test_fit_out_of_memory();
 	test_kernel_matches_exact();
+	test_parallel_for();
+	test_fit_threads_same_result();
 	test_normalize();
 	test_fit_spherical();
 	if (failures) {
