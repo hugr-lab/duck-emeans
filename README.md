@@ -6,7 +6,10 @@ Touvron, Picard, Douze and Jégou, [arXiv 2611.09501](https://arxiv.org/abs/2611
 in [faiss/contrib/e_means](https://github.com/facebookresearch/faiss/tree/main/contrib/e_means)).
 The paper reports Lloyd's 25-epoch loss beaten in 1.4 to 2.6 epochs.
 
-It is written in C11 on the stable DuckDB C extension API and built for DuckDB 2.0.
+It is a C++ extension for DuckDB 2.0, built against DuckDB's C++ API from the `duckdb` submodule, so a
+binary loads only in the DuckDB release it was built for. The numerical core and most SQL functions are
+C11 (the core has no DuckDB dependency); what needs the C++ API, such as the window function, spilling
+memory and the streaming functions, is in `src/cpp`.
 
 **[The playground](https://hugr-lab.github.io/duck-emeans/playground.html)**: Lloyd's k-means and e-means
 side by side on 2-D data, with their Voronoi cells and the train and held-out test MSE over epochs, both
@@ -19,14 +22,17 @@ embedding-sized vectors (d = 768 or 1536). Nothing is installed and no data leav
 
 Done (see [the plan](docs/PLAN.md)): the C core with a vectorised distance kernel, threads and Accelerate
 on macOS; the SQL functions below, with a cosine variant and spatial clustering of POINT geometries;
-validation against the reference implementation in faiss-cpu; comparisons with PostGIS and Qdrant; and
-two browser demos. Still to come: a GPU build and the community-extension submission.
+`emeans_stream` for data larger than memory; validation against the reference implementation in
+faiss-cpu; comparisons with PostGIS and Qdrant; and two browser demos. Still to come: a GPU build and
+the community-extension submission.
 
 | Function | Returns |
 |---|---|
 | `emeans(vectors, k [, nepochs [, seed]])` | `STRUCT(centroids FLOAT[][], labels INTEGER[], obj DOUBLE[], batch_size, alpha0, n_splits)` |
 | `emeans_assign(vector, centroids)` | `STRUCT(label INTEGER, sq_distance DOUBLE)`, the nearest centroid |
 | `emeans_spherical(vectors, k [, nepochs [, seed]])` | as `emeans`, for unit vectors: by direction, unit centroids |
+| `emeans_stream(query, k [, nepochs := 5, seed := 1234, batch_size := 0])` | table: one row per cluster, `cluster`, `centroid FLOAT[d]`, `n`, `run`; for data larger than memory |
+| `emeans_stream_spherical(query, k [, ...])` | as `emeans_stream`, by direction |
 | `emeans_assign_spherical(vector, centroids)` | `STRUCT(label INTEGER, similarity DOUBLE)`, the closest direction |
 | `emeans_agg(points, k [, nepochs [, seed]])` | aggregate, also a window function: centroids of a group's POINT geometries or vectors |
 | `emeans_cluster_id(points, k [, nepochs [, seed]]) OVER (...)` | window function: each row's 1-based cluster within its partition, like `ST_ClusterKMeans` |
@@ -97,6 +103,36 @@ distances are in its units, and projected coordinates keep their precision. Both
 (`FLOAT[]`, `DOUBLE[]`, integer lists, fixed-size arrays), labelled as `emeans_assign` labels them. Both
 read `emeans_max_work` and `emeans_threads` as `emeans()` does.
 
+## Data larger than memory
+
+`emeans()` needs the whole list in memory, twice: once as DuckDB holds it and once as float32 for the
+fit. `emeans_stream` takes a query instead, runs it once per pass ordered by `hash(v, seed, pass)`, and
+feeds the rows to the fit as they arrive, so it holds one batch and the centroids; DuckDB's sort spills
+each pass to `temp_directory`. The batch is B × d floats, and the batch law makes B grow with n, k and
+nepochs (524,288 rows for 10M × 768, k = 1024, 5 epochs: 1.6 GB); `batch_size := ...` sets B instead
+(`run.batch_size` says what was used).
+
+```sql
+CREATE TABLE topics AS SELECT * FROM emeans_stream('SELECT embedding FROM chunks', 1024, nepochs := 3);
+
+SELECT chunk_id, (emeans_assign(embedding, t.centroids)).label AS topic
+FROM chunks, (SELECT list(centroid ORDER BY cluster) AS centroids FROM topics) t;
+```
+
+The query is a single `SELECT` returning one column of vectors; anything else (a second statement, a
+write, SQL that does not parse on its own) is refused at bind. NULL vectors are left out. The query runs
+on a connection of its own in one read-only transaction, so all passes see the same rows and nothing it
+calls can write (a `nextval` fails); it sees committed data only, not the caller's temporary tables or
+uncommitted rows. A run stops on Ctrl-C, `con.interrupt()` or the caller's `max_execution_time`, also
+while DuckDB is still sorting a pass. The start and the order of the passes come from hashes of the
+vectors, not from `emeans()`'s generator, so the result differs from `emeans()` for the same seed: in the
+tests the objective is within 1% on a mixture without repeated vectors, and within 10% (inside the
+spread of `emeans()` over seeds) on 50 points repeated 200 times. The same seed gives the same result.
+Where both fit, the stream is 1.7–2.6× slower (the sorts); if any vector repeats, even once, every pass
+also groups the vectors, and the stream is 2.4–3.9× slower. DuckDB's sort needs some memory per thread, so
+under a tight `memory_limit` use fewer threads: 1M × 32 vectors (128 MB) cluster under a 60 MB limit on
+one thread. See docs/PLAN.md, phase 13.
+
 ## How it compares
 
 Against faiss-cpu's `NumpyEmeans` on Gaussian mixtures (n = 100,000, k = 256, 2 epochs), the final
@@ -115,8 +151,8 @@ and Qdrant's, answer queries an order of magnitude faster at higher recall; `vss
 ## Limits
 
 Every function that fits stops when its query is interrupted (Ctrl-C in the CLI, `con.interrupt()` in
-Python): the fit checks once per step. To also cap the work up front, in units of rows × k × d summed
-over the passes:
+Python) or passes `max_execution_time`, with DuckDB's own error: the fit checks once per step. To also
+cap the work up front, in units of rows × k × d summed over the passes:
 
 ```sql
 SET emeans_max_work = 1e12;   -- default 0: no cap
@@ -131,8 +167,9 @@ and `emeans_agg`'s points. They count against `memory_limit`. Between calls, an 
 be written to `temp_directory` when they do not fit. A query that needs more than the limit at once
 fails with DuckDB's out-of-memory error. In one test, 2,000 groups of 50,000 2-D points (1.6 GB of
 aggregate state) ran under `memory_limit = '500MB'` at a peak RSS of 730–910 MB, against 2.9 GB for the
-earlier malloc build, and took about 40% longer for the spilling. A single fit still needs its whole
-input in memory, as float32 (n × d × 4 bytes), plus about 16 bytes per row of workspace.
+earlier malloc build, and took about 40% longer for the spilling. A single `emeans()` fit still needs its
+whole input in memory, as float32 (n × d × 4 bytes), plus about 16 bytes per row of workspace;
+`emeans_stream` does not (above).
 
 ## Building
 
@@ -141,10 +178,15 @@ git clone --recurse-submodules https://github.com/hugr-lab/duck-emeans
 cd duck-emeans
 GEN=ninja make release      # builds DuckDB v2.0.0 from the submodule, then the extension
 make test_release test_core test_threads
+make test_interrupt        # emeans_stream stops on con.interrupt(); needs uv
 make compare_faiss bench   # against faiss-cpu; needs uv
 ```
 
 See [DEVELOPMENT.md](DEVELOPMENT.md).
+
+`main` is protected: changes go through a pull request that passes every CI check (`test_core` on macOS
+and Ubuntu, the CRAP gate, the faiss-cpu comparison with the interrupt test, the browser demos, the Linux
+and Windows builds, which run the SQL tests, and the WASM build) and has one approving review.
 
 ## The browser demos
 

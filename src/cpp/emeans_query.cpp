@@ -3,7 +3,10 @@
 
 #include "duckdb.hpp"
 #include "duckdb/main/capi/capi_internal.hpp"
+#include "duckdb/common/error_data.hpp"
+#include "duckdb/common/exception.hpp"
 #include "duckdb/parallel/task_executor.hpp"
+#include "emeans_query.hpp"
 
 extern "C" {
 #include "emeans_query.h"
@@ -36,9 +39,38 @@ extern "C" void *emeans_query_context(duckdb_client_context context) {
 	return context ? &reinterpret_cast<duckdb::CClientContextWrapper *>(context)->context : nullptr;
 }
 
+// Interrupted, or past max_execution_time: BlockingInterruptCheck throws for either, and reads the clock on every call
+// (IsInterrupted only sees the interrupt). Asked once per step, so the clock costs nothing that matters.
 extern "C" int emeans_query_interrupted(void *query) {
-	return query && static_cast<duckdb::ClientContext *>(query)->IsInterrupted();
+	if (!query) {
+		return 0;
+	}
+	try {
+		static_cast<duckdb::ClientContext *>(query)->BlockingInterruptCheck();
+		return 0;
+	} catch (duckdb::InterruptException &) {
+		return 1;
+	}
 }
+
+namespace duckdb {
+
+std::string InterruptMessage(void *query) {
+	try {
+		if (query) {
+			static_cast<ClientContext *>(query)->BlockingInterruptCheck();
+		}
+	} catch (InterruptException &e) {
+		return ErrorData(e).RawMessage();
+	}
+	return InterruptException::INTERRUPT_MESSAGE;
+}
+
+void ThrowInterrupted(void *query) {
+	throw InterruptException(InterruptMessage(query));
+}
+
+} // namespace duckdb
 
 // The parts do no allocation and cannot fail, so WorkOnTasks has no error to rethrow; if scheduling
 // itself throws, the caller (a C function) must not see the exception, and the parts run here instead.

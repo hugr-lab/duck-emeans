@@ -12,6 +12,7 @@
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
+#include "emeans_query.hpp"
 
 extern "C" {
 #include "emeans_functions.h"
@@ -123,7 +124,7 @@ void Run(DataChunk &args, ExpressionState &state, Vector &result, int spherical)
 	const int rc = emeans_cluster_chunk(reinterpret_cast<duckdb_data_chunk>(&args), reinterpret_cast<duckdb_vector>(&out),
 	                                    &info.settings, info.mem, spherical, err);
 	if (rc && emeans_query_interrupted(info.settings.query)) {
-		throw InterruptException();
+		ThrowInterrupted(info.settings.query);
 	}
 	if (rc) {
 		throw InvalidInputException("%s: %s", spherical ? "emeans_spherical" : "emeans", err);

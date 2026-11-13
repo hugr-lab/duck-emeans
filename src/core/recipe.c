@@ -82,6 +82,15 @@ int64_t emeans_pass_rows(int64_t n, double nepochs, int64_t pass) {
 	return fractional_rows(n, nepochs);
 }
 
+double emeans_total_rows(int64_t n, double nepochs) {
+	double rows = 0;
+	int64_t passes = emeans_n_passes(n, nepochs);
+	for (int64_t pass = 0; pass < passes; pass++) {
+		rows += (double)emeans_pass_rows(n, nepochs, pass);
+	}
+	return rows;
+}
+
 // Closed form of the sum over the pass schedule, so a large nepochs costs nothing here: whole - 1 full
 // passes plus the closing one, and the rounded fraction if any; below one pass only the fraction.
 static int64_t total_steps(int64_t n, double nepochs, int64_t batch_size) {

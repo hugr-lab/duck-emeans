@@ -30,6 +30,7 @@ GEN=ninja make release              # DuckDB + build/release/extension/emeans/em
 make test_release                   # SQL tests in DuckDB's unittest
 make test_core                      # C core tests under ASan/UBSan
 make test_threads                   # core on 8 threads under ThreadSanitizer
+make test_interrupt                 # emeans_stream stops on con.interrupt() (Python via uv); CI too
 make crap                           # CRAP < 10 for every C and C++ function; CI fails otherwise
 make compare_faiss                  # against faiss-cpu NumpyEmeans (uv, pinned Python 3.12 env); CI too
 make bench                          # timings for docs/BENCHMARK.md; manual
@@ -61,6 +62,10 @@ Use `rtk` as a command prefix in this environment (see the user's global instruc
   `emeans_window.cpp` is `emeans_cluster_id`, a DuckDB `WindowFunction` that fits each partition with
   `emeans_agg`'s C code through `emeans_agg.h`. It must stay a `WindowFunction`: a window-only
   aggregate is rewritten into a GROUP BY by the window self-join optimizer and fails.
+  `emeans_stream.cpp` is the table functions `emeans_stream`/`emeans_stream_spherical`: they run the user's query
+  once per pass on a `Connection` of their own (one read transaction, the caller's default schema), ordered by
+  `hash(v, seed, pass)`, and feed the core's stepper (`emeans_stream_begin` etc. in `emeans.h`, which runs
+  `emeans_fit`'s step on a B x d row buffer). A pass query must not have a LIMIT: a top-N does not spill.
 - `docs/PLAN.md`: the phased plan; `docs/ALGORITHM.md`: the formulas.
 - `web/playground/`: the playground, Scala.js + Laminar built with Mill (`make -C web/playground test`,
   `make -C web/playground dist`); it reaches DuckDB through `web/playground-bridge.js`.

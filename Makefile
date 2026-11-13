@@ -12,7 +12,7 @@ OVERRIDE_GIT_DESCRIBE ?= v2.0.0
 # (provides: release, debug, reldebug, test_release, test_debug, wasm_*, format, clean, ...)
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
-.PHONY: test_core test_threads crap compare_faiss bench compare_postgis compare_qdrant help
+.PHONY: test_core test_threads test_interrupt crap compare_faiss bench compare_postgis compare_qdrant help
 
 EXTENSION_BINARY := build/release/extension/$(EXT_NAME)/$(EXT_NAME).duckdb_extension
 
@@ -49,6 +49,10 @@ REFERENCE_PYTHON := uv run --quiet --no-project --python 3.12 --with faiss-cpu==
 compare_faiss: release
 	$(REFERENCE_PYTHON) test/python/compare_faiss.py $(EXTENSION_BINARY)
 
+# emeans_stream stops when its query is interrupted, on one thread and on eight, and while a spilled pass sorts (CI).
+test_interrupt: release
+	$(REFERENCE_PYTHON) test/python/interrupt.py $(EXTENSION_BINARY)
+
 bench: release
 	$(REFERENCE_PYTHON) bench/run_bench.py $(EXTENSION_BINARY)
 
@@ -78,6 +82,7 @@ help:
 	@echo "make test_release     - SQL logic tests (DuckDB's unittest over test/sql) against the release build"
 	@echo "make test_core        - C tests of src/core under ASan/UBSan (no DuckDB needed)"
 	@echo "make test_threads     - 8 threads on a shared parameter table under ThreadSanitizer"
+	@echo "make test_interrupt   - emeans_stream stops on con.interrupt() (Python via uv; CI)"
 	@echo "make crap             - CRAP score per C/C++ function (lizard + llvm-cov); fails at CRAP >= 10"
 	@echo "make compare_faiss    - recipe, objective and assignment against faiss-cpu's NumpyEmeans (manual)"
 	@echo "make bench            - emeans() against NumpyEmeans and Lloyd, timings (manual)"

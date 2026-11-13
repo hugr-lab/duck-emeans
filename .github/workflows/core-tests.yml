@@ -1,6 +1,8 @@
 #
 # Numerical core under ASan/UBSan and ThreadSanitizer, the CRAP gate over every C and C++ function, and
-# the comparison with the reference e-means in faiss-cpu. The last two build DuckDB from the submodule.
+# the comparison with the reference e-means in faiss-cpu and the interrupt test. The last two jobs build DuckDB from
+# the submodule. The SQL tests (test/sql, among them the memory_limit and max_execution_time tests) run in the
+# distribution pipeline and in the CRAP job.
 #
 name: Core tests
 on:
@@ -48,6 +50,8 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - uses: seanmiddleditch/gha-setup-ninja@v6
       - run: GEN=ninja make compare_faiss
+      # emeans_stream stops on con.interrupt(), also while a spilled pass sorts (the release is built already).
+      - run: GEN=ninja make test_interrupt
 
   web:
     name: browser demos (npm test, Scala.js tests)
