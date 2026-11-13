@@ -78,8 +78,9 @@ argument once in bind and caches the norms, so the hot path is a plain n × k ×
    and the core's constant-step (Lloyd) mode.
 10. Done: spatial clustering. `emeans_agg` (aggregate and window function over POINT geometries or vectors)
     and `emeans_assign_point`, after PostGIS's `ST_ClusterKMeans`; geographic CRSs on the sphere.
-11. Move from the stable C API to DuckDB's C++ API (in progress), keeping the numerical core in C.
+11. Done: the move from the stable C API to DuckDB's C++ API, keeping the numerical core in C (below).
 12. Submission to `duckdb/community-extensions`.
+13. Streaming e-means for data larger than memory, as separate functions (planned, below).
 
 ## Moving to the C++ API
 
@@ -154,6 +155,74 @@ Stages, each with every SQL test passing:
    `emeans_assign_point`, `emeans_recipe`, `emeans_trace` and the settings. They work as they are; they
    would move to C++ only for a reason of their own.
 
+## Streaming e-means: data larger than memory (planned)
+
+`emeans()` takes the whole data set as one value, `list(embedding)`, and the fit keeps a float32 copy
+pinned until it ends, because it reads rows at random. The data must therefore fit in memory twice:
+10M × 768 is 30 GB as FLOAT plus 30 GB pinned. Stage 2 made that copy count against `memory_limit`; it
+cannot make it spill.
+
+e-means reads the data in a few passes (5 by default), each over a random permutation of the rows, and
+each step needs only its batch. DuckDB can produce a shuffled pass out of core: its sort spills to
+`temp_directory`. So a streaming fit can let DuckDB order each pass and feed the core batch by batch,
+holding one batch, the centroids and the workspace: O(B·d + k·d) memory instead of O(n·d).
+
+This is a set of separate functions, so `emeans()` and its results stay as they are:
+
+```sql
+-- One row per cluster: cluster INTEGER, centroid FLOAT[d], n BIGINT (rows in the closing pass), and the
+-- run (batch size, step, objective per pass) in a STRUCT that is the same in every row.
+SELECT * FROM emeans_stream('SELECT embedding FROM docs', 256, nepochs := 5, seed := 1234);
+SELECT * FROM emeans_stream_spherical('SELECT embedding FROM docs', 256);
+
+-- Labels are already a streaming operation: emeans_assign row by row.
+SELECT id, (emeans_assign(embedding, c.centroids)).label
+FROM docs, (SELECT list(centroid ORDER BY cluster) AS centroids FROM emeans_stream('SELECT embedding FROM docs', 256)) c;
+```
+
+The argument is a query that returns one column of vectors (`FLOAT[d]`, `FLOAT[]` or `DOUBLE[]`). A
+run is:
+
+1. One query for n and d, and from them the recipe (batch size, step, passes), as `emeans()` resolves
+   it.
+2. The start: k rows drawn with a seeded reservoir sample of the query (`USING SAMPLE reservoir(k ROWS)
+   REPEATABLE (seed)`), the reference's random start. k-means++ needs a pass per centroid, so it does not
+   fit here; k-means|| (Bahmani et al. 2012, a few passes) is a later option.
+3. Pass p: the query ordered by `hash(x, seed, p)` and streamed; a fractional last pass stops after its
+   rows. Batches of B rows go through the same step as now (assignment, EMA update, cosine schedule,
+   revival).
+4. The closing pass: one more streamed pass, in any order, for the exact means and the counts.
+
+The core needs a stepper next to `emeans_fit`: begin (n, d, k, params, the start), one call per batch,
+then the closing pass and the result. The step already works on one batch (`run_batch` in
+`src/core/emeans.c`); what changes is that the rows of a batch arrive instead of being indexed into a
+matrix.
+
+To settle with a prototype before anything else:
+
+- **Running the passes.** The function has to run queries of its own: n and d, the sample, then one per
+  pass. That means a second connection to the same database from inside a table function. A prototype
+  must show that this neither deadlocks on DuckDB's task scheduler nor sees data change between passes.
+  The passes should run in one read transaction, so they read one snapshot, which also means the query
+  cannot see the caller's uncommitted rows. If nested queries do not work, the fallback is a form that
+  exposes the passes: one aggregate call per pass that carries the state,
+  `emeans_stream_pass(x, state ORDER BY hash(x, seed, pass))`. It works, but the user writes the loop.
+- **The permutation key.** `hash(x, seed, p)` needs no row identity, which a view or a query does not
+  have. Identical vectors get the same key, and their order among themselves is then arbitrary. That
+  does not change which batch they fall in on average, but it makes a run with duplicate vectors not
+  exactly reproducible.
+- **Speed.** Every pass is a full sort of n × d values, so a pass costs far more than in memory. The
+  benchmark should measure the slowdown against `emeans()` at sizes that fit, and the time at a size that
+  does not.
+- **Results.** For the same seed the results differ from `emeans()`: the permutation comes from a hash,
+  not from PCG32, and the start is a reservoir sample. The objective should still be within the 1% band
+  the FAISS comparison uses.
+
+Tests: the objective within 1% of `emeans()` and of faiss-cpu on data that fits; a run under a
+`memory_limit` below the data's size that completes where `emeans()` fails with an out-of-memory error;
+the same result for the same seed on data without duplicates; interrupts as in step 4.1; the spherical
+variant against `emeans_spherical()`.
+
 Later, if wanted: an "IVF-Flat in SQL" example where `emeans_assign` gives the partition key (see
 docs/QDRANT.md for how such an index compares).
 
@@ -165,6 +234,7 @@ docs/QDRANT.md for how such an index compares).
   function; 10M × 128 is 10 GB + 5 GB. Since stage 2 the float32 copy is counted against
   `memory_limit`, but it is pinned for the whole fit, so it cannot spill. The window operator also
   keeps a partition's rows pinned, so `emeans_agg(...) OVER (PARTITION BY ...)` does not spill as the
-  `GROUP BY` form does.
+  `GROUP BY` form does. The streaming functions planned above are the way past this for data larger
+  than memory.
 - Reference drift: blog, abstract and code disagree on the speed-up figures and on the scaling-law
   coefficients. Pin the FAISS commit the tests compare against.
