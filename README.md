@@ -6,7 +6,10 @@ Touvron, Picard, Douze and Jégou, [arXiv 2611.09501](https://arxiv.org/abs/2611
 in [faiss/contrib/e_means](https://github.com/facebookresearch/faiss/tree/main/contrib/e_means)).
 The paper reports Lloyd's 25-epoch loss beaten in 1.4 to 2.6 epochs.
 
-It is written in C11 on the stable DuckDB C extension API and built for DuckDB 2.0.
+It is a C++ extension for DuckDB 2.0, built against DuckDB's C++ API from the `duckdb` submodule, so a
+binary loads only in the DuckDB release it was built for. The numerical core and most SQL functions are
+C11 (the core has no DuckDB dependency); what needs the C++ API, such as the window function, spilling
+memory and the streaming functions, is in `src/cpp`.
 
 **[The playground](https://hugr-lab.github.io/duck-emeans/playground.html)**: Lloyd's k-means and e-means
 side by side on 2-D data, with their Voronoi cells and the train and held-out test MSE over epochs, both
