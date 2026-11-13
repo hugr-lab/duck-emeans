@@ -80,7 +80,7 @@ argument once in bind and caches the norms, so the hot path is a plain n × k ×
     and `emeans_assign_point`, after PostGIS's `ST_ClusterKMeans`; geographic CRSs on the sphere.
 11. Done: the move from the stable C API to DuckDB's C++ API, keeping the numerical core in C (below).
 12. Submission to `duckdb/community-extensions`.
-13. Done: streaming e-means for data larger than memory, as separate functions (below).
+13. Done (merged in #22): streaming e-means for data larger than memory, as separate functions (below).
 
 ## Moving to the C++ API
 
@@ -155,7 +155,7 @@ Stages, each with every SQL test passing:
    `emeans_assign_point`, `emeans_recipe`, `emeans_trace` and the settings. They work as they are; they
    would move to C++ only for a reason of their own.
 
-## Streaming e-means: data larger than memory (done)
+## Streaming e-means: data larger than memory (done, #22)
 
 `emeans()` takes the whole data set as one value, `list(embedding)`, and the fit keeps a float32 copy
 pinned until it ends, because it reads rows at random. The data must therefore fit in memory twice:
@@ -225,6 +225,15 @@ What the prototype settled:
   refills the result. (Waiting in `WaitForTask` in that state spins forever with `threads = 1`.) The
   connection does `USE` of the caller's default catalog and schema. It cannot see the caller's
   temporary tables or uncommitted rows; the tests show this.
+- **The query as SQL text.** The query is spliced into subqueries (the source, the passes, the start), so
+  it must parse on its own as a single `SELECT`, checked at bind: such a string has balanced parentheses,
+  quotes and comments and cannot close the subquery around it or add a statement, and the newline the
+  splices add ends a line comment at its end. The nested connection runs every query, the bind's
+  included, in one `READ ONLY` transaction, so nothing it calls can write (a `nextval` in the query
+  fails; before the bind was covered, it advanced a sequence even inside the caller's read-only
+  transaction, found in the security review). The `USE` target quotes the caller's catalog and schema as
+  identifiers. Every security setting DuckDB has (`enable_external_access`, `allowed_directories`,
+  `lock_configuration`, ...) is global, so the nested connection is bound by them as the caller is.
 - **Interrupts.** While this thread waits in `Fetch` for workers to sort a pass, it checks nothing, and a
   spilled sort can take minutes (found in review). A watcher thread for the length of the fit asks every
   50 ms whether the caller was interrupted or passed `max_execution_time` (`BlockingInterruptCheck`;
@@ -263,8 +272,8 @@ What the prototype settled:
   axis test.
 
 Not done: k-means++ or k-means|| starts (one pass per centroid, or a few with k-means||, Bahmani et al.
-2012), the batch-law and step overrides (`batch_size` is there), and comparing the stream with faiss-cpu directly (it is
-compared with `emeans()`, which is).
+2012), the batch-law and step overrides (`batch_size` is there), and comparing the stream with faiss-cpu
+directly (it is compared with `emeans()`, which is).
 
 Later, if wanted: an "IVF-Flat in SQL" example where `emeans_assign` gives the partition key (see
 docs/QDRANT.md for how such an index compares).
