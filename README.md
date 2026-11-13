@@ -19,8 +19,9 @@ embedding-sized vectors (d = 768 or 1536). Nothing is installed and no data leav
 
 Done (see [the plan](docs/PLAN.md)): the C core with a vectorised distance kernel, threads and Accelerate
 on macOS; the SQL functions below, with a cosine variant and spatial clustering of POINT geometries;
-validation against the reference implementation in faiss-cpu; comparisons with PostGIS and Qdrant; and
-two browser demos. Still to come: a GPU build and the community-extension submission.
+`emeans_stream` for data larger than memory; validation against the reference implementation in
+faiss-cpu; comparisons with PostGIS and Qdrant; and two browser demos. Still to come: a GPU build and
+the community-extension submission.
 
 | Function | Returns |
 |---|---|
@@ -115,10 +116,12 @@ SELECT chunk_id, (emeans_assign(embedding, t.centroids)).label AS topic
 FROM chunks, (SELECT list(centroid ORDER BY cluster) AS centroids FROM topics) t;
 ```
 
-The query is a single `SELECT` returning one column of vectors (anything else is refused at bind); NULLs are left
-out. It runs on a connection of its own in one
-read transaction, so all passes see the same rows, and it sees committed data only: not the caller's
-temporary tables or uncommitted rows. The start and the order of the passes come from hashes of the
+The query is a single `SELECT` returning one column of vectors; anything else (a second statement, a
+write, SQL that does not parse on its own) is refused at bind. NULL vectors are left out. The query runs
+on a connection of its own in one read-only transaction, so all passes see the same rows and nothing it
+calls can write (a `nextval` fails); it sees committed data only, not the caller's temporary tables or
+uncommitted rows. A run stops on Ctrl-C, `con.interrupt()` or the caller's `max_execution_time`, also
+while DuckDB is still sorting a pass. The start and the order of the passes come from hashes of the
 vectors, not from `emeans()`'s generator, so the result differs from `emeans()` for the same seed: in the
 tests the objective is within 1% on a mixture without repeated vectors, and within 10% (inside the
 spread of `emeans()` over seeds) on 50 points repeated 200 times. The same seed gives the same result.
@@ -145,8 +148,8 @@ and Qdrant's, answer queries an order of magnitude faster at higher recall; `vss
 ## Limits
 
 Every function that fits stops when its query is interrupted (Ctrl-C in the CLI, `con.interrupt()` in
-Python): the fit checks once per step. To also cap the work up front, in units of rows × k × d summed
-over the passes:
+Python) or passes `max_execution_time`, with DuckDB's own error: the fit checks once per step. To also
+cap the work up front, in units of rows × k × d summed over the passes:
 
 ```sql
 SET emeans_max_work = 1e12;   -- default 0: no cap
@@ -172,10 +175,15 @@ git clone --recurse-submodules https://github.com/hugr-lab/duck-emeans
 cd duck-emeans
 GEN=ninja make release      # builds DuckDB v2.0.0 from the submodule, then the extension
 make test_release test_core test_threads
+make test_interrupt        # emeans_stream stops on con.interrupt(); needs uv
 make compare_faiss bench   # against faiss-cpu; needs uv
 ```
 
 See [DEVELOPMENT.md](DEVELOPMENT.md).
+
+`main` is protected: changes go through a pull request that passes every CI check (`test_core` on macOS
+and Ubuntu, the CRAP gate, the faiss-cpu comparison with the interrupt test, the browser demos, the Linux
+and Windows builds, which run the SQL tests, and the WASM build) and has one approving review.
 
 ## The browser demos
 
