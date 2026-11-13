@@ -393,3 +393,29 @@ query I
 SELECT count(*) FROM blobs
 ----
 60
+
+# Every query of the nested connection is read-only, the bind's too: a list source using nextval fails, and the
+# sequence does not move, inside the caller's read-only transaction or not.
+statement ok
+CREATE SEQUENCE seq;
+
+statement ok
+BEGIN TRANSACTION READ ONLY;
+
+statement error
+SELECT * FROM emeans_stream('SELECT [nextval(''seq'')::FLOAT, 1.0] AS v FROM range(5)', 1)
+----
+read-only
+
+statement ok
+ROLLBACK;
+
+statement error
+SELECT * FROM emeans_stream('SELECT [nextval(''seq'')::FLOAT, 1.0] AS v FROM range(5)', 1)
+----
+read-only
+
+query I
+SELECT nextval('seq')
+----
+1

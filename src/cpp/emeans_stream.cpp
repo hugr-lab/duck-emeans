@@ -123,13 +123,15 @@ void ReadOnlyTransaction(Connection &con) {
 	}
 }
 
-// The connection the passes run on: the caller's database and default schema, in one read transaction.
+// The connection the queries run on: the caller's database and default schema, in one read-only transaction from
+// the first query on, the bind's included (a side effect such as nextval must not escape the caller's context).
 unique_ptr<Connection> OpenConnection(ClientContext &context, const string &search_path) {
 	auto con = make_uniq<Connection>(DatabaseInstance::GetDatabase(context));
 	auto use = con->Query("USE " + search_path);
 	if (use->HasError()) {
 		use->ThrowError();
 	}
+	ReadOnlyTransaction(*con);
 	return con;
 }
 
@@ -483,7 +485,6 @@ void Prepare(StreamState &state, const StreamBindData &data, int64_t n) {
 void Fit(ClientContext &context, const StreamBindData &data, StreamState &state) {
 	auto con = OpenConnection(context, data.search_path);
 	InterruptWatcher watcher(context, *con);
-	ReadOnlyTransaction(*con);
 	// n and the distinct vectors from a GROUP BY, which spills (count(DISTINCT v) does not).
 	auto counts = Submit(*con, "SELECT coalesce(sum(c), 0)::BIGINT, count(*) FROM (SELECT count(*) AS c FROM " + data.source +
 	                               " GROUP BY v)");
