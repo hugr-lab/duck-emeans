@@ -24,6 +24,8 @@
 #include <map>
 #include <mutex>
 
+#include "emeans_query.hpp"
+
 extern "C" {
 #include "emeans_agg.h"
 #include "emeans_functions.h"
@@ -40,6 +42,7 @@ struct PartitionLabels {
 	std::mutex lock;
 	bool done = false;
 	bool interrupted = false;
+	std::string interrupt; // the InterruptException's message, thrown to every row asking
 	std::string error;
 	vector<int32_t> labels;
 };
@@ -132,7 +135,7 @@ void FitPartition(ClusterIdGlobalState &gstate, idx_t begin, idx_t end, Partitio
 	if (!labels.empty()) {
 		const int rc = emeans_points_label(points.Get(), &context, labels.data(), err);
 		if (rc && emeans_query_interrupted(context.query)) {
-			throw InterruptException();
+			ThrowInterrupted(context.query);
 		}
 		Check(rc, err);
 	}
@@ -149,15 +152,16 @@ PartitionLabels &Labels(ClusterIdGlobalState &gstate, idx_t begin, idx_t end) {
 	if (!entry->done) {
 		try {
 			FitPartition(gstate, begin, end, *entry);
-		} catch (InterruptException &) {
+		} catch (InterruptException &e) {
 			entry->interrupted = true;
+			entry->interrupt = ErrorData(e).RawMessage();
 		} catch (std::exception &e) {
 			entry->error = ErrorData(e).RawMessage();
 		}
 		entry->done = true;
 	}
 	if (entry->interrupted) {
-		throw InterruptException();
+		throw InterruptException(entry->interrupt);
 	}
 	if (!entry->error.empty()) {
 		throw InvalidInputException(entry->error);

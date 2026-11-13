@@ -1,0 +1,395 @@
+# name: test/sql/emeans_stream.test
+# description: emeans_stream() and emeans_stream_spherical(): e-means over a query, one pass per epoch, against emeans()
+# group: [emeans]
+
+require emeans
+
+# Three blobs of 20 rows in 3-D, row i in blob i % 3, i = 3m + b. Coordinate 1 is 100 b + 0.1 (7i mod 5): i runs over
+# 20 values 3 apart, so i mod 5 takes every residue 4 times and the mean of 7i mod 5 is 2, giving 0.2, 100.2, 200.2.
+# Coordinate 2 is 0.1 (11i mod 7) = 0.1 ((5m + 4b) mod 7): m = 0..13 is two full cycles (sum 42), and m = 14..19 adds
+# 0 5 3 1 6 4 (b = 0, sum 19), 4 2 0 5 3 1 (b = 1, 15) and 1 6 4 2 0 5 (b = 2, 18): means 0.305, 0.285 and 0.3.
+# Coordinate 3 is 0.1 (m mod 2), mean 0.05. The blobs are 100 apart, so once the start has a row of each blob the
+# closing pass assigns each blob to its own cluster and the closing means are these. seed := 1 gives such a start;
+# another seed can put two of the three starting rows in one blob, a local minimum that revival does not undo (neither
+# half of the split blob is dead), as with emeans().
+statement ok
+CREATE TABLE blobs AS
+SELECT i, [i % 3 * 100 + (i * 7 % 5) * 0.1, (i * 11 % 7) * 0.1, i // 3 % 2 * 0.1]::FLOAT[3] AS v FROM range(60) t(i);
+
+query III
+SELECT list_transform(centroid, lambda x: round(x, 4)), n, cluster BETWEEN 1 AND 3
+FROM emeans_stream('SELECT v FROM blobs', 3, seed := 1) ORDER BY centroid[1]
+----
+[0.2, 0.305, 0.05]	20	true
+[100.2, 0.285, 0.05]	20	true
+[200.2, 0.3, 0.05]	20	true
+
+# The run: 60 rows, 5 passes of 60 (nepochs defaults to 5), the same in every row.
+query IIII
+SELECT count(*), count(DISTINCT run), any_value(run.n), len(any_value(run.obj)) FROM emeans_stream('SELECT v FROM blobs', 3)
+----
+3	1	60	5
+
+query I
+SELECT typeof(centroid) FROM emeans_stream('SELECT v FROM blobs', 3) LIMIT 1
+----
+FLOAT[3]
+
+# Lists in: the vectors' size is read from the first one, and the centroids are FLOAT[3] all the same. (The hash of
+# a DOUBLE[] differs from that of a FLOAT[3], so the start and the passes do, and so may the clusters.)
+query II
+SELECT typeof(centroid), sum(n) FROM emeans_stream('SELECT v::DOUBLE[] FROM blobs', 3) GROUP BY ALL
+----
+FLOAT[3]	60
+
+# nepochs 2.5 over 60 rows: one full pass, then round(0.5 * 60) = 30 rows, then the full closing pass.
+query II
+SELECT len(any_value(run.obj)), sum(n) FROM emeans_stream('SELECT v FROM blobs', 3, nepochs := 2.5)
+----
+3	60
+
+# batch_size sets B instead of the batch law, and so the batch buffer (B x d floats); above n it is capped at n.
+query II
+SELECT any_value(run.batch_size), sum(n) FROM emeans_stream('SELECT v FROM blobs', 3, batch_size := 7)
+----
+7	60
+
+query I
+SELECT any_value(run.batch_size) FROM emeans_stream('SELECT v FROM blobs', 3, batch_size := 1000)
+----
+60
+
+statement error
+SELECT * FROM emeans_stream('SELECT v FROM blobs', 3, batch_size := -1)
+----
+batch_size must not be negative
+
+# A query's NULL vectors are left out.
+query I
+SELECT any_value(run.n) FROM emeans_stream('SELECT v FROM blobs UNION ALL SELECT NULL', 3)
+----
+60
+
+# The centroids work with emeans_assign: each row's label is its blob's cluster.
+query I
+SELECT count(DISTINCT (i % 3, (emeans_assign(v, c.centroids)).label))
+FROM blobs, (SELECT list(centroid ORDER BY cluster) AS centroids FROM emeans_stream('SELECT v FROM blobs', 3, seed := 1)) c
+----
+3
+
+# The query is run in the caller's default schema.
+statement ok
+CREATE SCHEMA other;
+
+statement ok
+CREATE TABLE other.blobs AS SELECT v FROM blobs WHERE i < 30;
+
+statement ok
+USE memory.other;
+
+query I
+SELECT any_value(run.n) FROM emeans_stream('SELECT v FROM blobs', 3)
+----
+30
+
+statement ok
+USE memory.main;
+
+# Names that must be quoted in SQL: a database with a hyphen, a schema with a space.
+statement ok
+ATTACH ':memory:' AS "my-data";
+
+statement ok
+CREATE SCHEMA "my-data"."my schema";
+
+statement ok
+CREATE TABLE "my-data"."my schema".blobs AS SELECT v FROM blobs WHERE i < 45;
+
+statement ok
+USE "my-data"."my schema";
+
+query I
+SELECT any_value(run.n) FROM emeans_stream('SELECT v FROM blobs', 3)
+----
+45
+
+statement ok
+USE memory.main;
+
+# It runs on a connection of its own, so it sees committed rows only.
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO blobs SELECT 60, [0, 0, 0]::FLOAT[3];
+
+query I
+SELECT any_value(run.n) FROM emeans_stream('SELECT v FROM blobs', 3)
+----
+60
+
+statement ok
+ROLLBACK;
+
+# A mixture: 16 groups 0..15 at (g (t mod 4)) with noise in [0, 1), 20,000 rows of 8 dimensions. emeans() and
+# emeans_stream() start differently and permute differently; the sum of squared distances to the nearest centroid
+# (measured after the fit, with emeans_assign) is within 1% of each other, the band the FAISS comparison uses.
+statement ok
+CREATE TABLE mix AS
+SELECT list_transform(range(8), lambda t: ((hash(i, t) % 1000) / 1000.0 + (i % 16) * (t % 4))::FLOAT)::FLOAT[8] AS v
+FROM range(20000) r(i);
+
+statement ok
+CREATE TABLE c_mem AS SELECT (emeans(list(v), 16)).centroids AS c FROM mix;
+
+statement ok
+CREATE TABLE c_stream AS SELECT list(centroid ORDER BY cluster) AS c FROM emeans_stream('SELECT v FROM mix', 16);
+
+query I
+SELECT abs(s / m - 1) < 0.01
+FROM (SELECT sum((emeans_assign(v, (SELECT c FROM c_mem))).sq_distance) AS m,
+             sum((emeans_assign(v, (SELECT c FROM c_stream))).sq_distance) AS s FROM mix)
+----
+true
+
+# Repeated vectors: 50 distinct points, 200 copies each. Ordered by hash(v) alone, a vector's copies would sit
+# together, so the start (the first 16 rows) would be 16 copies of one point, and every batch would hold a few points
+# many times. Ranked among their copies, the copies spread. All 16 centroids are distinct, and the objective is within
+# 10% of emeans()'s (whose seeds 1 to 10 span 45,070 to 49,300 here, about 9%).
+statement ok
+CREATE TABLE repeated AS SELECT [(i % 50) % 10, (i % 50) // 10 * 3, ((i % 50) * 7) % 11]::FLOAT[3] AS v FROM range(10000) r(i);
+
+query II
+SELECT count(DISTINCT centroid), sum(n) FROM emeans_stream('SELECT v FROM repeated', 16)
+----
+16	10000
+
+query I
+SELECT s / m < 1.1
+FROM (SELECT sum((emeans_assign(v, (SELECT (emeans(list(v), 16)).centroids FROM repeated))).sq_distance) AS m,
+             sum((emeans_assign(v, (SELECT list(centroid ORDER BY cluster)
+                                     FROM emeans_stream('SELECT v FROM repeated', 16)))).sq_distance) AS s
+      FROM repeated)
+----
+true
+
+# Fewer distinct vectors than k: 2 points, 3 copies each, k = 3. The start takes both and repeats one; the closing
+# means put the 3 rows of each point on it, and the third cluster keeps no rows.
+query II
+SELECT list(centroid ORDER BY centroid) FILTER (WHERE n > 0), list(n ORDER BY n)
+FROM emeans_stream('SELECT [0, 0, 0]::FLOAT[3] FROM range(3) UNION ALL SELECT [1, 1, 1]::FLOAT[3] FROM range(3)', 3)
+----
+[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]	[0, 3, 3]
+
+# The same seed gives the same result, on any number of threads: the order of a pass is hash(v, seed, pass), and the
+# fit does not depend on the threads. Another seed gives another start.
+statement ok
+SET threads = 1;
+
+statement ok
+CREATE TABLE one AS SELECT * FROM emeans_stream('SELECT v FROM mix', 16, seed := 5);
+
+statement ok
+SET threads = 4;
+
+statement ok
+CREATE TABLE four AS SELECT * FROM emeans_stream('SELECT v FROM mix', 16, seed := 5);
+
+query I
+SELECT count(*) FROM one JOIN four USING (cluster) WHERE one.centroid = four.centroid AND one.n = four.n AND one.run = four.run
+----
+16
+
+query I
+SELECT count(*) FROM one JOIN emeans_stream('SELECT v FROM mix', 16, seed := 6) s USING (cluster) WHERE one.centroid = s.centroid
+----
+0
+
+# max_execution_time bounds a run as it bounds DuckDB's own operators, though the passes run on another connection:
+# 500 epochs over the 20,000-row mixture take seconds, the limit is 100 ms. emeans() stops the same way.
+statement ok
+SET max_execution_time = 100;
+
+statement error
+SELECT * FROM emeans_stream('SELECT v FROM mix', 16, nepochs := 500)
+----
+Query exceeded maximum execution time
+
+statement error
+SELECT emeans(list(v), 16, 5000.0) FROM mix
+----
+Query exceeded maximum execution time
+
+statement ok
+RESET max_execution_time;
+
+# Spherical: four unit vectors around each axis, tilted by +-0.1 in the other two coordinates. The tilts cancel in each
+# cluster's sum, so each centroid is its axis, as emeans_spherical() finds (test/sql/emeans_spherical.test).
+statement ok
+CREATE TABLE dirs AS
+SELECT list_transform(v, lambda e: e / sqrt(list_dot_product(v, v)))::FLOAT[3] AS v
+FROM (SELECT unnest([[1, 0.1, 0], [1, -0.1, 0], [1, 0, 0.1], [1, 0, -0.1],
+                     [0.1, 1, 0], [-0.1, 1, 0], [0, 1, 0.1], [0, 1, -0.1],
+                     [0.1, 0, 1], [-0.1, 0, 1], [0, 0.1, 1], [0, -0.1, 1]]::DOUBLE[][]) AS v);
+
+query II
+SELECT list_transform(centroid, lambda x: round(x, 6)), n FROM emeans_stream_spherical('SELECT v FROM dirs', 3)
+ORDER BY centroid DESC
+----
+[1.0, 0.0, 0.0]	4
+[0.0, 1.0, 0.0]	4
+[0.0, 0.0, 1.0]	4
+
+query I
+SELECT list_sort((emeans_spherical(list(v), 3)).centroids)::FLOAT[3][] =
+       (SELECT list(centroid ORDER BY centroid) FROM emeans_stream_spherical('SELECT v FROM dirs', 3))
+FROM dirs
+----
+true
+
+# emeans_max_work bounds rows x k x d over all passes: 5 x 60 x 3 x 3 = 2700.
+statement ok
+SET emeans_max_work = 2699;
+
+statement error
+SELECT * FROM emeans_stream('SELECT v FROM blobs', 3)
+----
+<REGEX>:.*emeans_stream: work limit exceeded: rows x k x d over all passes is 2700.*emeans_max_work.*
+
+statement ok
+SET emeans_max_work = 2700;
+
+query I
+SELECT count(*) FROM emeans_stream('SELECT v FROM blobs', 3)
+----
+3
+
+statement ok
+RESET emeans_max_work;
+
+# Errors.
+statement error
+SELECT * FROM emeans_stream(NULL, 3)
+----
+query and k must not be NULL
+
+statement error
+SELECT * FROM emeans_stream('SELECT v FROM blobs', 0)
+----
+k must be at least 1
+
+statement error
+SELECT * FROM emeans_stream('SELECT v FROM blobs', 61)
+----
+exceed
+
+statement error
+SELECT * FROM emeans_stream('SELECT v, i FROM blobs', 3)
+----
+one column of vectors
+
+statement error
+SELECT * FROM emeans_stream('SELECT i FROM blobs', 3)
+----
+one column of vectors
+
+statement error
+SELECT * FROM emeans_stream('SELECT ''a'' AS v', 3)
+----
+one column of vectors
+
+statement error
+SELECT * FROM emeans_stream('SELECT v FROM no_such_table', 3)
+----
+no_such_table
+
+statement error
+SELECT * FROM emeans_stream('SELECT v FROM blobs WHERE false', 3)
+----
+the query returned no vectors
+
+statement error
+SELECT * FROM emeans_stream('SELECT [1, 2]::DOUBLE[] UNION ALL SELECT [1, 2, 3]', 1)
+----
+<REGEX>:.*Conversion Error.*
+
+statement error
+SELECT * FROM emeans_stream('SELECT [1, NULL]::DOUBLE[] UNION ALL SELECT [1, 2]', 1)
+----
+a vector contains NULL
+
+statement error
+SELECT * FROM emeans_stream('SELECT [1, ''nan''::DOUBLE] UNION ALL SELECT [1, 2]', 1)
+----
+x contains NaN or infinity
+
+# The same where the NaN is not in the start (k = 1 of 101 rows) but met in a pass.
+statement error
+SELECT * FROM emeans_stream('SELECT [1, ''nan''::DOUBLE] UNION ALL SELECT [i, 2]::DOUBLE[] FROM range(100) r(i)', 1)
+----
+x contains NaN or infinity
+
+statement error
+SELECT * FROM emeans_stream('SELECT []::DOUBLE[]', 1)
+----
+the vectors are empty
+
+statement error
+SELECT * FROM emeans_stream('SELECT v FROM blobs', 3, nepochs := 0)
+----
+nepochs must be a positive number
+
+# A query may end with a line comment.
+query I
+SELECT count(*) FROM emeans_stream('SELECT v FROM blobs -- the blobs', 3)
+----
+3
+
+# A query may end with a semicolon; NULL named arguments mean the defaults.
+query I
+SELECT count(*) FROM emeans_stream('SELECT v FROM blobs; ', 3, nepochs := NULL, seed := NULL)
+----
+3
+
+# The seed is in emeans()'s range, so no two seeds wrap onto one.
+statement error
+SELECT * FROM emeans_stream('SELECT v FROM blobs', 3, seed := -1)
+----
+seed must be in [0, 4294967295], got -1
+
+statement error
+SELECT * FROM emeans_stream('SELECT v FROM blobs', 3, seed := 4294967301)
+----
+seed must be in [0, 4294967295]
+
+query I
+SELECT count(*) FROM emeans_stream('SELECT v FROM blobs', 3, seed := 4294967295)
+----
+3
+
+# The query is spliced into subqueries, so it must parse on its own as a single SELECT: it cannot close the subquery
+# around it, add a statement, or write. The nested transaction is read-only besides.
+statement error
+SELECT * FROM emeans_stream('SELECT v FROM blobs) AS q(v); DELETE FROM blobs; SELECT (1', 3)
+----
+<REGEX>:.*emeans_stream: .*(syntax error|single SELECT).*
+
+statement error
+SELECT * FROM emeans_stream('SELECT v FROM blobs; DELETE FROM blobs', 3)
+----
+the query must be a single SELECT statement
+
+statement error
+SELECT * FROM emeans_stream('DELETE FROM blobs RETURNING v', 3)
+----
+the query must be a single SELECT statement
+
+statement error
+SELECT * FROM emeans_stream('SELECT v FROM blobs /*', 3)
+----
+emeans_stream:
+
+query I
+SELECT count(*) FROM blobs
+----
+60

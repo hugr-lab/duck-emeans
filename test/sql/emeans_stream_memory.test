@@ -1,0 +1,41 @@
+# name: test/sql/emeans_stream_memory.test
+# description: emeans_stream() fits data larger than memory_limit, where emeans() fails: DuckDB's sort spills each pass
+# group: [emeans]
+
+require emeans
+
+# The table is on disk, as data larger than memory would be. (In an in-memory database the table itself competes
+# for the limit, and how far a run gets near the floor varies from run to run.)
+statement ok
+ATTACH '{TEST_DIR}/emeans_stream_memory.duckdb' AS disk;
+
+statement ok
+USE disk;
+
+# 1M rows of FLOAT[32]: 128 MB of vectors, above the 60 MB limit below.
+statement ok
+CREATE TABLE big AS
+SELECT list_transform(range(32), lambda t: ((hash(i, t) % 1000) / 1000.0 + (i % 16) * (t % 4))::FLOAT)::FLOAT[32] AS v
+FROM range(1000000) r(i);
+
+statement ok
+CHECKPOINT;
+
+# One thread: DuckDB's sort needs memory per thread, and with many threads its own floor rises above the limit.
+statement ok
+SET threads = 1;
+
+statement ok
+SET memory_limit = '60MB';
+
+# emeans() copies the whole list into one block, which cannot spill.
+statement error
+SELECT (emeans(list(v), 64)).obj FROM big;
+----
+Out of Memory
+
+# The stream holds a batch, the centroids and the workspace; the passes are sorted out of core in temp_directory.
+query II
+SELECT count(*), sum(n) FROM emeans_stream('SELECT v FROM big', 64, nepochs := 2);
+----
+64	1000000

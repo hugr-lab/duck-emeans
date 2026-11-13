@@ -27,6 +27,8 @@ two browser demos. Still to come: a GPU build and the community-extension submis
 | `emeans(vectors, k [, nepochs [, seed]])` | `STRUCT(centroids FLOAT[][], labels INTEGER[], obj DOUBLE[], batch_size, alpha0, n_splits)` |
 | `emeans_assign(vector, centroids)` | `STRUCT(label INTEGER, sq_distance DOUBLE)`, the nearest centroid |
 | `emeans_spherical(vectors, k [, nepochs [, seed]])` | as `emeans`, for unit vectors: by direction, unit centroids |
+| `emeans_stream(query, k [, nepochs := 5, seed := 1234, batch_size := 0])` | table: one row per cluster, `cluster`, `centroid FLOAT[d]`, `n`, `run`; for data larger than memory |
+| `emeans_stream_spherical(query, k [, ...])` | as `emeans_stream`, by direction |
 | `emeans_assign_spherical(vector, centroids)` | `STRUCT(label INTEGER, similarity DOUBLE)`, the closest direction |
 | `emeans_agg(points, k [, nepochs [, seed]])` | aggregate, also a window function: centroids of a group's POINT geometries or vectors |
 | `emeans_cluster_id(points, k [, nepochs [, seed]]) OVER (...)` | window function: each row's 1-based cluster within its partition, like `ST_ClusterKMeans` |
@@ -97,6 +99,34 @@ distances are in its units, and projected coordinates keep their precision. Both
 (`FLOAT[]`, `DOUBLE[]`, integer lists, fixed-size arrays), labelled as `emeans_assign` labels them. Both
 read `emeans_max_work` and `emeans_threads` as `emeans()` does.
 
+## Data larger than memory
+
+`emeans()` needs the whole list in memory, twice: once as DuckDB holds it and once as float32 for the
+fit. `emeans_stream` takes a query instead, runs it once per pass ordered by `hash(v, seed, pass)`, and
+feeds the rows to the fit as they arrive, so it holds one batch and the centroids; DuckDB's sort spills
+each pass to `temp_directory`. The batch is B × d floats, and the batch law makes B grow with n, k and
+nepochs (524,288 rows for 10M × 768, k = 1024, 5 epochs: 1.6 GB); `batch_size := ...` sets B instead
+(`run.batch_size` says what was used).
+
+```sql
+CREATE TABLE topics AS SELECT * FROM emeans_stream('SELECT embedding FROM chunks', 1024, nepochs := 3);
+
+SELECT chunk_id, (emeans_assign(embedding, t.centroids)).label AS topic
+FROM chunks, (SELECT list(centroid ORDER BY cluster) AS centroids FROM topics) t;
+```
+
+The query is a single `SELECT` returning one column of vectors (anything else is refused at bind); NULLs are left
+out. It runs on a connection of its own in one
+read transaction, so all passes see the same rows, and it sees committed data only: not the caller's
+temporary tables or uncommitted rows. The start and the order of the passes come from hashes of the
+vectors, not from `emeans()`'s generator, so the result differs from `emeans()` for the same seed: in the
+tests the objective is within 1% on a mixture without repeated vectors, and within 10% (inside the
+spread of `emeans()` over seeds) on 50 points repeated 200 times. The same seed gives the same result.
+Where both fit, the stream is 1.7–2.6× slower (the sorts); if any vector repeats, even once, every pass
+also groups the vectors, and the stream is 2.4–3.9× slower. DuckDB's sort needs some memory per thread, so
+under a tight `memory_limit` use fewer threads: 1M × 32 vectors (128 MB) cluster under a 60 MB limit on
+one thread. See docs/PLAN.md, phase 13.
+
 ## How it compares
 
 Against faiss-cpu's `NumpyEmeans` on Gaussian mixtures (n = 100,000, k = 256, 2 epochs), the final
@@ -131,8 +161,9 @@ and `emeans_agg`'s points. They count against `memory_limit`. Between calls, an 
 be written to `temp_directory` when they do not fit. A query that needs more than the limit at once
 fails with DuckDB's out-of-memory error. In one test, 2,000 groups of 50,000 2-D points (1.6 GB of
 aggregate state) ran under `memory_limit = '500MB'` at a peak RSS of 730–910 MB, against 2.9 GB for the
-earlier malloc build, and took about 40% longer for the spilling. A single fit still needs its whole
-input in memory, as float32 (n × d × 4 bytes), plus about 16 bytes per row of workspace.
+earlier malloc build, and took about 40% longer for the spilling. A single `emeans()` fit still needs its
+whole input in memory, as float32 (n × d × 4 bytes), plus about 16 bytes per row of workspace;
+`emeans_stream` does not (above).
 
 ## Building
 

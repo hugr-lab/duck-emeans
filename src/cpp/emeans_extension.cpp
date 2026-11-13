@@ -32,6 +32,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	RegisterCluster(loader);
 	RegisterAgg(loader);
 	RegisterClusterId(loader);
+	RegisterStream(loader);
 }
 
 void EmeansExtension::Load(ExtensionLoader &loader) {

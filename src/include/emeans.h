@@ -83,3 +83,38 @@ typedef struct {
 // a message in err (EMEANS_ERR_LEN bytes). Uses one allocation and no global state.
 int emeans_fit(const float *x, int64_t n, int64_t d, int64_t k, const emeans_params *p, emeans_output *out,
                char *err);
+
+// A fit fed row by row: the same run as emeans_fit, for data that arrives in passes instead of sitting in
+// memory (emeans_stream in SQL, where DuckDB orders each pass). The caller hands in every pass's rows in
+// that pass's order, emeans_pass_rows(n, nepochs, pass) of them, and the stream steps every B rows. Memory
+// is O(B d + k d), not O(n d). Given rows in emeans_fit's permutation and its start, the result is
+// emeans_fit's.
+typedef struct emeans_stream emeans_stream;
+
+// Begins a stream over n rows of dimension d. p->init must hold the k x d start (the stream cannot draw it
+// from rows it has not seen); p->kmeans_plus_plus is ignored. out->centroids (k x d) and out->obj
+// (emeans_n_passes(n, nepochs)) are the caller's and must live until emeans_stream_finish; out->labels is
+// not used. p is copied. Returns EMEANS_OK with *stream set, or an EMEANS_* code with a message in err.
+int emeans_stream_begin(int64_t n, int64_t d, int64_t k, const emeans_params *p, emeans_output *out,
+                        emeans_stream **stream, char *err);
+
+// Rows the current pass still takes (0: end it with emeans_stream_end_pass), or -1 after the last pass.
+int64_t emeans_stream_wanted(const emeans_stream *stream);
+// The current pass, from 0; the number of passes once all are done.
+int64_t emeans_stream_pass(const emeans_stream *stream);
+const emeans_recipe *emeans_stream_recipe(const emeans_stream *stream);
+
+// Hands in count rows (count x d, row-major) of the current pass; rows beyond what it takes are ignored.
+// Returns EMEANS_OK, EMEANS_INVALID (a NaN or infinity, or no pass left) or EMEANS_INTERRUPTED.
+int emeans_stream_add(emeans_stream *stream, const float *rows, int64_t count, char *err);
+
+// Ends the current pass: steps on its last, partial batch and stores its objective in out->obj. Fails with
+// EMEANS_INVALID if the pass had fewer rows than it takes.
+int emeans_stream_end_pass(emeans_stream *stream, char *err);
+
+// After the last pass: sets out->centroids to the closing means and, unless counts is NULL, counts (k) to
+// the rows each cluster was assigned in the closing pass.
+int emeans_stream_finish(emeans_stream *stream, int64_t *counts, char *err);
+
+// Releases the stream and its workspace. NULL is a no-op.
+void emeans_stream_free(emeans_stream *stream);

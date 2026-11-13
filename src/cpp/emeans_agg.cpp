@@ -14,6 +14,8 @@
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 
+#include "emeans_query.hpp"
+
 extern "C" {
 #include "emeans_agg.h"
 #include "emeans_functions.h"
@@ -48,7 +50,7 @@ const emeans_agg_context &Context(const AggregateInputData &input) {
 // An error from the C code; DuckDB's own InterruptException when the fit stopped for the query.
 void Check(int rc, const char *err, const emeans_agg_context &context) {
 	if (rc && emeans_query_interrupted(context.query)) {
-		throw InterruptException();
+		ThrowInterrupted(context.query);
 	}
 	if (rc) {
 		throw InvalidInputException("emeans_agg: %s", err);

@@ -17,5 +17,7 @@ void RegisterClusterId(ExtensionLoader &loader);
 void RegisterAgg(ExtensionLoader &loader);
 // emeans and emeans_spherical (src/cpp/emeans_cluster.cpp).
 void RegisterCluster(ExtensionLoader &loader);
+// emeans_stream and emeans_stream_spherical, the table functions (src/cpp/emeans_stream.cpp).
+void RegisterStream(ExtensionLoader &loader);
 
 } // namespace duckdb

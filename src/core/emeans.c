@@ -33,8 +33,9 @@ typedef struct {
 	double *batch_dist;   // B
 	int64_t *count;       // n_j of the current batch, k
 	int64_t *pass_count;  // counts of the closing pass, k
-	int64_t *perm;        // n
+	int64_t *perm;        // the pass permutation, n; streaming: 0, 1, ..., B - 1
 	double *min_dist;     // k-means++: each row's squared distance to the nearest chosen centroid, n
+	float *rows;          // streaming: the rows of the batch being filled, B x d
 	donor_key *keys;      // k
 	int32_t *batch_label; // B
 	int32_t *touched;     // clusters with n_j > 0 in the current batch, k
@@ -51,6 +52,9 @@ typedef struct {
 	int spherical;
 	int threads;
 	int64_t scratch_floats; // per thread
+	int64_t perm_len;       // rows in ws.perm: n, or B when streaming
+	int64_t min_len;        // rows in ws.min_dist: n, or 0 when streaming
+	int64_t row_floats;     // floats in ws.rows: 0, or B x d when streaming
 	const emeans_params *params;
 	int64_t rows_done;      // rows assigned so far, for the epoch of a frame
 	emeans_recipe recipe;
@@ -119,7 +123,7 @@ static int check_input(const run_state *s, const emeans_params *p, char *err) {
 	if (s->k > INT32_MAX) {
 		return emeans_error(err, "k must be below 2^31");
 	}
-	if (!all_finite(s->x, (size_t)(s->n * s->d))) {
+	if (s->x && !all_finite(s->x, (size_t)(s->n * s->d))) { // a stream checks its rows as they come
 		return emeans_error(err, "x contains NaN or infinity");
 	}
 	if (p->init && !all_finite(p->init, (size_t)(s->k * s->d))) {
@@ -128,17 +132,8 @@ static int check_input(const run_state *s, const emeans_params *p, char *err) {
 	return EMEANS_OK;
 }
 
-static double total_rows(int64_t n, double nepochs) {
-	double rows = 0;
-	int64_t passes = emeans_n_passes(n, nepochs);
-	for (int64_t pass = 0; pass < passes; pass++) {
-		rows += (double)emeans_pass_rows(n, nepochs, pass);
-	}
-	return rows;
-}
-
 static int check_budget(const run_state *s, const emeans_params *p, char *err) {
-	double rows = total_rows(s->n, p->nepochs) + (p->kmeans_plus_plus && !p->init ? (double)s->n : 0.0);
+	double rows = emeans_total_rows(s->n, p->nepochs) + (p->kmeans_plus_plus && !p->init ? (double)s->n : 0.0);
 	double work = rows * (double)s->k * (double)s->d;
 	if (p->max_work > 0 && work > p->max_work) {
 		snprintf(err, EMEANS_ERR_LEN, "work limit exceeded: rows x k x d over all passes is %.4g, the limit %.4g",
@@ -161,10 +156,11 @@ static int prepare(run_state *s, const emeans_params *p, char *err) {
 
 // Ordered by alignment: 8-byte arrays, the 16-byte keys, then the 4-byte arrays.
 static double workspace_bytes(const run_state *s, int64_t b) {
-	double n = (double)s->n, k = (double)s->k, kd = k * (double)s->d;
+	double k = (double)s->k, kd = k * (double)s->d;
 	double scratch = (double)s->threads * (double)s->scratch_floats;
-	return 8.0 * (2.0 * kd + k + (double)b) + 8.0 * (2.0 * k + 2.0 * n) + (double)sizeof(donor_key) * k +
-	       4.0 * ((double)b + 2.0 * k) + 4.0 * (2.0 * kd + scratch) + 4.0 * (kd + k);
+	double per_row = 8.0 * ((double)s->perm_len + (double)s->min_len);
+	return 8.0 * (2.0 * kd + k + (double)b) + 8.0 * 2.0 * k + per_row + (double)sizeof(donor_key) * k +
+	       4.0 * ((double)b + 2.0 * k) + 4.0 * (2.0 * kd + scratch + (double)s->row_floats) + 4.0 * (kd + k);
 }
 
 static void *carve(char **cursor, int64_t count, size_t size) {
@@ -202,7 +198,7 @@ static void workspace_free(run_state *s) {
 
 static int workspace_alloc(run_state *s, int64_t b, char *err) {
 	workspace *ws = &s->ws;
-	int64_t n = s->n, d = s->d, k = s->k;
+	int64_t d = s->d, k = s->k;
 	char *cursor = workspace_block(s, workspace_bytes(s, b), err);
 	ws->block = cursor;
 	if (!cursor) {
@@ -214,14 +210,15 @@ static int workspace_alloc(run_state *s, int64_t b, char *err) {
 	ws->batch_dist = carve(&cursor, b, sizeof(double));
 	ws->count = carve(&cursor, k, sizeof(int64_t));
 	ws->pass_count = carve(&cursor, k, sizeof(int64_t));
-	ws->perm = carve(&cursor, n, sizeof(int64_t));
-	ws->min_dist = carve(&cursor, n, sizeof(double));
+	ws->perm = carve(&cursor, s->perm_len, sizeof(int64_t));
+	ws->min_dist = carve(&cursor, s->min_len, sizeof(double));
 	ws->keys = carve(&cursor, k, sizeof(donor_key));
 	ws->batch_label = carve(&cursor, b, sizeof(int32_t));
 	ws->touched = carve(&cursor, k, sizeof(int32_t));
 	ws->targets = carve(&cursor, k, sizeof(int32_t));
 	ws->unit = carve(&cursor, k * d, sizeof(float));
 	ws->scratch = carve(&cursor, s->threads * s->scratch_floats, sizeof(float));
+	ws->rows = carve(&cursor, s->row_floats, sizeof(float));
 	float *ct = carve(&cursor, k * d, sizeof(float));
 	float *bias = carve(&cursor, k, sizeof(float));
 	emeans_kernel_init(&ws->kernel, ct, bias, k, d, s->spherical);
@@ -309,7 +306,7 @@ static double accumulate(run_state *s, const int64_t *rows, int64_t count) {
 // In the closing pass: the labels, and the sums and counts the closing means are taken from.
 static void record_closing(run_state *s, const int64_t *rows, int64_t count) {
 	workspace *ws = &s->ws;
-	for (int64_t i = 0; i < count; i++) {
+	for (int64_t i = 0; s->out->labels && i < count; i++) {
 		s->out->labels[rows[i]] = ws->batch_label[i];
 	}
 	for (int64_t t = 0; t < s->n_touched; t++) {
@@ -557,7 +554,7 @@ static void init_state(run_state *s) {
 		}
 		refresh(s, j);
 	}
-	for (int64_t i = 0; i < s->n; i++) {
+	for (int64_t i = 0; s->out->labels && i < s->n; i++) {
 		s->out->labels[i] = -1;
 	}
 	s->out->n_splits = 0;
@@ -593,6 +590,10 @@ static void run(run_state *s, const emeans_params *p) {
 	}
 }
 
+static int clamp_threads(int threads) {
+	return threads < 1 ? 1 : (threads > EMEANS_MAX_THREADS ? EMEANS_MAX_THREADS : threads);
+}
+
 int emeans_fit(const float *x, int64_t n, int64_t d, int64_t k, const emeans_params *p, emeans_output *out,
                char *err) {
 	if (!x || !p || !out) {
@@ -604,8 +605,10 @@ int emeans_fit(const float *x, int64_t n, int64_t d, int64_t k, const emeans_par
 	               .k = k,
 	               .seed = p->seed,
 	               .spherical = p->spherical != 0,
-	               .threads = p->threads < 1 ? 1 : (p->threads > EMEANS_MAX_THREADS ? EMEANS_MAX_THREADS : p->threads),
+	               .threads = clamp_threads(p->threads),
 	               .scratch_floats = emeans_kernel_scratch(d),
+	               .perm_len = n,
+	               .min_len = n,
 	               .params = p,
 	               .out = out};
 	int rc = prepare(&s, p, err);
@@ -623,4 +626,185 @@ int emeans_fit(const float *x, int64_t n, int64_t d, int64_t k, const emeans_par
 		return EMEANS_INTERRUPTED;
 	}
 	return EMEANS_OK;
+}
+
+//===--------------------------------------------------------------------===//
+// Streaming: the same run, with the rows of each pass handed in by the caller in the pass's order
+//===--------------------------------------------------------------------===//
+
+struct emeans_stream {
+	run_state s;
+	emeans_params params; // a copy: s.params points here
+	int64_t pass;         // the pass being fed; recipe.n_passes once all are done
+	int64_t wanted;       // rows the pass still takes
+	int64_t fill;         // rows in ws.rows
+	double pass_obj;
+};
+
+static int stream_check(const emeans_params *p, const emeans_output *out, char *err) {
+	if (!p || !out || !out->centroids || !out->obj) {
+		return emeans_error(err, "params, output, centroids and obj must not be NULL");
+	}
+	if (!p->init) {
+		return emeans_error(err, "a stream needs its initial centroids in params.init");
+	}
+	return EMEANS_OK;
+}
+
+static void stream_start_pass(emeans_stream *st) {
+	st->wanted = emeans_pass_rows(st->s.n, st->params.nepochs, st->pass);
+	st->pass_obj = 0;
+}
+
+// The run state, the workspace (perm holding 0, 1, ..., B - 1, so a batch is the buffer's rows in order)
+// and the start, as emeans_fit has them before its first pass.
+static int stream_setup(emeans_stream *st, emeans_output *out, char *err) {
+	run_state *s = &st->s;
+	s->seed = st->params.seed;
+	s->spherical = st->params.spherical != 0;
+	s->threads = clamp_threads(st->params.threads);
+	s->scratch_floats = emeans_kernel_scratch(s->d);
+	s->params = &st->params;
+	s->out = out;
+	int rc = prepare(s, &st->params, err);
+	if (rc != EMEANS_OK) {
+		return rc;
+	}
+	int64_t b = s->recipe.batch_size;
+	s->perm_len = b;
+	s->row_floats = b * s->d;
+	if (workspace_alloc(s, b, err)) {
+		return EMEANS_OOM;
+	}
+	for (int64_t i = 0; i < b; i++) {
+		s->ws.perm[i] = i;
+	}
+	s->x = s->ws.rows;
+	init_centroids(s, &st->params);
+	init_state(s);
+	emit_frame(s, 0);
+	stream_start_pass(st);
+	return EMEANS_OK;
+}
+
+int emeans_stream_begin(int64_t n, int64_t d, int64_t k, const emeans_params *p, emeans_output *out,
+                        emeans_stream **stream, char *err) {
+	*stream = NULL;
+	int rc = stream_check(p, out, err);
+	if (rc != EMEANS_OK) {
+		return rc;
+	}
+	emeans_stream *st = emeans_calloc(1, sizeof(emeans_stream));
+	if (!st) {
+		emeans_error(err, "out of memory");
+		return EMEANS_OOM;
+	}
+	st->params = *p;
+	st->s.n = n;
+	st->s.d = d;
+	st->s.k = k;
+	rc = stream_setup(st, out, err);
+	if (rc != EMEANS_OK) {
+		emeans_stream_free(st);
+		return rc;
+	}
+	*stream = st;
+	return EMEANS_OK;
+}
+
+int64_t emeans_stream_wanted(const emeans_stream *st) {
+	return st->pass < st->s.recipe.n_passes ? st->wanted : -1;
+}
+
+int64_t emeans_stream_pass(const emeans_stream *st) {
+	return st->pass;
+}
+
+const emeans_recipe *emeans_stream_recipe(const emeans_stream *st) {
+	return &st->s.recipe;
+}
+
+// The step on the buffered rows, if there are any; the last pass is the closing one.
+static int stream_step(emeans_stream *st, char *err) {
+	run_state *s = &st->s;
+	if (st->fill == 0) {
+		return EMEANS_OK;
+	}
+	if (stopping(s)) {
+		emeans_error(err, "interrupted");
+		return EMEANS_INTERRUPTED;
+	}
+	st->pass_obj += run_batch(s, s->ws.perm, st->fill, st->pass == s->recipe.n_passes - 1);
+	st->fill = 0;
+	return EMEANS_OK;
+}
+
+// Copies up to `count` rows into the buffer, as many as fit and the pass still takes; returns how many.
+static int64_t stream_copy(emeans_stream *st, const float *rows, int64_t count) {
+	run_state *s = &st->s;
+	int64_t room = s->recipe.batch_size - st->fill;
+	int64_t take = count < room ? count : room;
+	take = take < st->wanted ? take : st->wanted;
+	memcpy(s->ws.rows + st->fill * s->d, rows, (size_t)(take * s->d) * sizeof(float));
+	st->fill += take;
+	st->wanted -= take;
+	return take;
+}
+
+int emeans_stream_add(emeans_stream *st, const float *rows, int64_t count, char *err) {
+	int64_t d = st->s.d;
+	if (st->pass >= st->s.recipe.n_passes) {
+		return emeans_error(err, "the stream has had all its passes");
+	}
+	if (count > 0 && !all_finite(rows, (size_t)(count * d))) {
+		return emeans_error(err, "x contains NaN or infinity");
+	}
+	int rc = EMEANS_OK;
+	while (rc == EMEANS_OK && count > 0 && st->wanted > 0) {
+		int64_t taken = stream_copy(st, rows, count);
+		rows += taken * d;
+		count -= taken;
+		rc = st->fill == st->s.recipe.batch_size ? stream_step(st, err) : EMEANS_OK;
+	}
+	return rc;
+}
+
+int emeans_stream_end_pass(emeans_stream *st, char *err) {
+	if (st->pass >= st->s.recipe.n_passes) {
+		return emeans_error(err, "the stream has had all its passes");
+	}
+	if (st->wanted > 0) {
+		snprintf(err, EMEANS_ERR_LEN, "pass %lld ended %lld rows short: the data changed during the fit",
+		         (long long)st->pass, (long long)st->wanted);
+		return EMEANS_INVALID;
+	}
+	int rc = stream_step(st, err);
+	if (rc == EMEANS_OK) {
+		st->s.out->obj[st->pass++] = st->pass_obj;
+		if (st->pass < st->s.recipe.n_passes) {
+			stream_start_pass(st);
+		}
+	}
+	return rc;
+}
+
+int emeans_stream_finish(emeans_stream *st, int64_t *counts, char *err) {
+	run_state *s = &st->s;
+	if (st->pass < s->recipe.n_passes) {
+		return emeans_error(err, "the stream has passes left");
+	}
+	close_centroids(s);
+	emit_frame(s, 1);
+	if (counts) {
+		memcpy(counts, s->ws.pass_count, (size_t)s->k * sizeof(int64_t));
+	}
+	s->out->recipe = s->recipe;
+	return EMEANS_OK;
+}
+
+void emeans_stream_free(emeans_stream *st) {
+	if (st && st->s.ws.block) {
+		workspace_free(&st->s);
+	}
+	free(st);
 }

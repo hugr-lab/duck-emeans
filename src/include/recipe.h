@@ -34,6 +34,8 @@ int64_t emeans_round_pow2(double value);
 // closing pass; below one pass only the rounded prefix. Rounding is ties-to-even like Python's round().
 int64_t emeans_n_passes(int64_t n, double nepochs);
 int64_t emeans_pass_rows(int64_t n, double nepochs, int64_t pass); // -1 past the end
+// Rows over all passes: the sum of emeans_pass_rows, as a double (the work limit multiplies it by k and d).
+double emeans_total_rows(int64_t n, double nepochs);
 
 // Cosine anneal from alpha0 to alpha0 / 10 over total_steps.
 double emeans_scheduled_alpha(double alpha0, int64_t step, int64_t total_steps);

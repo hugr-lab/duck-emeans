@@ -37,6 +37,7 @@ set(EXTENSION_SOURCES
         src/cpp/emeans_extension.cpp
         src/cpp/emeans_mem.cpp
         src/cpp/emeans_query.cpp
+        src/cpp/emeans_stream.cpp
         src/cpp/emeans_window.cpp
 )
 

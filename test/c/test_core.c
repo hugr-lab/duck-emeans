@@ -885,6 +885,152 @@ static void test_fit_interrupted(void) {
 	CHECK(a.allocs == a.releases, "%d allocations, %d releases", a.allocs, a.releases);
 }
 
+
+//===--------------------------------------------------------------------===//
+// emeans_stream
+//===--------------------------------------------------------------------===//
+
+typedef struct {
+	float centroids[64 * 32];
+	double obj[16];
+	int64_t counts[64];
+	emeans_output out;
+	char err[EMEANS_ERR_LEN];
+} stream_result;
+
+// Feeds every pass the rows of emeans_fit's permutation for it (seed stream 2, the pass seed from
+// emeans_epoch_seed, as src/core/emeans.c draws it), `chunk` rows per call, and finishes the stream.
+static int stream_fit(const float *x, int64_t n, int64_t d, int64_t k, const emeans_params *p, int64_t chunk,
+                      stream_result *r) {
+	r->out = (emeans_output) {r->centroids, NULL, r->obj, 0, {0}};
+	r->err[0] = '\0';
+	emeans_stream *st;
+	int rc = emeans_stream_begin(n, d, k, p, &r->out, &st, r->err);
+	int64_t *perm = malloc(sizeof(int64_t) * (size_t)n);
+	float *rows = malloc(sizeof(float) * (size_t)(chunk * d));
+	for (int64_t pass = 0; rc == EMEANS_OK && emeans_stream_wanted(st) >= 0; pass++) {
+		emeans_rng rng;
+		int64_t m = emeans_stream_wanted(st);
+		emeans_rng_seed(&rng, emeans_epoch_seed(p->seed, pass), 2);
+		emeans_shuffle_prefix(&rng, perm, n, m);
+		for (int64_t start = 0; rc == EMEANS_OK && start < m; start += chunk) {
+			int64_t c = m - start < chunk ? m - start : chunk;
+			for (int64_t i = 0; i < c; i++) {
+				memcpy(rows + i * d, x + perm[start + i] * d, sizeof(float) * (size_t)d);
+			}
+			rc = emeans_stream_add(st, rows, c, r->err);
+		}
+		rc = rc == EMEANS_OK ? emeans_stream_end_pass(st, r->err) : rc;
+	}
+	rc = rc == EMEANS_OK ? emeans_stream_finish(st, r->counts, r->err) : rc;
+	emeans_stream_free(st);
+	free(perm);
+	free(rows);
+	return rc;
+}
+
+// Given emeans_fit's start and permutations, a stream is emeans_fit, bit for bit: the same step on the same
+// batches. 2.5 epochs on 300 rows: passes of 300, 150 and 300 rows; B = 16 leaves partial batches, chunks
+// of 7 rows cross batch boundaries, and d = 4 keeps revival on.
+static void check_stream_matches_fit(int spherical) {
+	enum { N = 300, D = 4, K = 3 };
+	float x[N * D];
+	make_blobs(x, N, D);
+	emeans_params p;
+	emeans_default_params(&p);
+	p.nepochs = 2.5;
+	p.batch_size = 16;
+	p.spherical = spherical;
+	p.init = x + 10 * D; // rows 10, 11 and 12: one from each blob
+	static fit_result f;
+	static stream_result s;
+	CHECK(fit(x, N, D, K, &p, &f) == EMEANS_OK, "%s", f.err);
+	CHECK(stream_fit(x, N, D, K, &p, 7, &s) == EMEANS_OK, "%s", s.err);
+	CHECK(memcmp(f.centroids, s.centroids, sizeof(float) * K * D) == 0, "centroids (spherical %d)", spherical);
+	CHECK(f.obj[0] == s.obj[0] && f.obj[1] == s.obj[1] && f.obj[2] == s.obj[2], "objectives");
+	CHECK(f.out.n_splits == s.out.n_splits && s.out.recipe.total_steps == f.out.recipe.total_steps, "steps");
+	for (int j = 0; j < K; j++) {
+		int64_t count = 0;
+		for (int i = 0; i < N; i++) {
+			count += f.labels[i] == j;
+		}
+		CHECK(s.counts[j] == count, "cluster %d: %lld rows, the fit's labels say %lld", j, (long long)s.counts[j],
+		      (long long)count);
+	}
+}
+
+static void test_stream_matches_fit(void) {
+	check_stream_matches_fit(0);
+	check_stream_matches_fit(1);
+}
+
+static void test_stream_errors(void) {
+	emeans_params p;
+	emeans_stream *st;
+	stream_result r;
+	r.out = (emeans_output) {r.centroids, NULL, r.obj, 0, {0}};
+	line_params(&p, 1.0);
+	p.init = NULL;
+	CHECK(emeans_stream_begin(6, 2, 2, &p, &r.out, &st, r.err) == EMEANS_INVALID && strstr(r.err, "init") && !st,
+	      "no start: %s", r.err);
+	line_params(&p, 1.0);
+	CHECK(emeans_stream_begin(6, 2, 7, &p, &r.out, &st, r.err) == EMEANS_INVALID && strstr(r.err, "exceed"),
+	      "k > n: %s", r.err);
+	CHECK(emeans_stream_begin(6, 2, 2, &p, NULL, &st, r.err) == EMEANS_INVALID, "no output");
+	CHECK(emeans_stream_begin(6, 2, 2, &p, &r.out, &st, r.err) == EMEANS_OK, "%s", r.err);
+	// One pass of 6 rows: 4 is short; a NaN is refused; finishing early is refused.
+	CHECK(emeans_stream_add(st, LINE, 2, r.err) == EMEANS_OK && emeans_stream_wanted(st) == 4, "4 left");
+	const float bad[] = {0, NAN};
+	CHECK(emeans_stream_add(st, bad, 1, r.err) == EMEANS_INVALID && strstr(r.err, "NaN"), "%s", r.err);
+	CHECK(emeans_stream_finish(st, NULL, r.err) == EMEANS_INVALID && strstr(r.err, "passes left"), "%s", r.err);
+	CHECK(emeans_stream_end_pass(st, r.err) == EMEANS_INVALID && strstr(r.err, "4 rows short"), "%s", r.err);
+	// The rest of the rows, and more than the pass takes: the extra rows are ignored.
+	const float rest[] = {2, 0, 3, 0, 10, 0, 11, 0, 500, 0, 600, 0};
+	CHECK(emeans_stream_add(st, rest, 6, r.err) == EMEANS_OK && emeans_stream_wanted(st) == 0, "%s", r.err);
+	CHECK(emeans_stream_end_pass(st, r.err) == EMEANS_OK && emeans_stream_wanted(st) == -1, "%s", r.err);
+	CHECK(emeans_stream_pass(st) == 1 && emeans_stream_recipe(st)->n_passes == 1, "one pass done");
+	CHECK(emeans_stream_add(st, LINE, 1, r.err) == EMEANS_INVALID && strstr(r.err, "all its passes"), "%s", r.err);
+	CHECK(emeans_stream_end_pass(st, r.err) == EMEANS_INVALID, "no pass to end");
+	// One Lloyd step from (0, 1), as test_fit_one_lloyd_step: (0, 5.4), with 1 and 5 rows.
+	CHECK(emeans_stream_finish(st, r.counts, r.err) == EMEANS_OK, "%s", r.err);
+	CHECK_NEAR(r.centroids[2], 5.4, 1e-6);
+	CHECK(r.counts[0] == 1 && r.counts[1] == 5, "counts %lld %lld", (long long)r.counts[0], (long long)r.counts[1]);
+	CHECK_NEAR(r.obj[0], 186.0, 1e-9);
+	emeans_stream_free(st);
+	emeans_stream_free(NULL);
+}
+
+static void test_stream_out_of_memory(void) {
+	// Two allocations: the stream, then its workspace.
+	emeans_params p;
+	stream_result r;
+	line_params(&p, 2.0);
+	long fail_at = 1;
+	for (; fail_at < 10; fail_at++) {
+		emeans_fail_countdown = fail_at;
+		int rc = stream_fit(LINE, 6, 2, 2, &p, 6, &r);
+		if (rc == EMEANS_OK) {
+			break;
+		}
+		CHECK(rc == EMEANS_OOM && strstr(r.err, "out of memory"), "allocation %ld: %s", fail_at, r.err);
+	}
+	emeans_fail_countdown = 0;
+	CHECK(fail_at == 3, "two allocations per stream, succeeded at %ld", fail_at);
+}
+
+static void test_stream_interrupted(void) {
+	// Asked once per step: 2 passes of one batch each, so the second ask stops the second step.
+	emeans_params p;
+	stream_result r;
+	line_params(&p, 2.0);
+	stop_counter c = {0, 2};
+	p.interrupted = stop_after;
+	p.interrupt_ctx = &c;
+	CHECK(stream_fit(LINE, 6, 2, 2, &p, 6, &r) == EMEANS_INTERRUPTED && strcmp(r.err, "interrupted") == 0, "%s",
+	      r.err);
+	CHECK(c.calls == 2, "%d asks", c.calls);
+}
+
 int main(void) {
 	test_round_pow2();
 	test_passes();
@@ -915,6 +1061,10 @@ int main(void) {
 	test_kmeans_plus_plus();
 	test_normalize();
 	test_fit_spherical();
+	test_stream_matches_fit();
+	test_stream_errors();
+	test_stream_out_of_memory();
+	test_stream_interrupted();
 	if (failures) {
 		fprintf(stderr, "%d checks failed\n", failures);
 		return 1;
