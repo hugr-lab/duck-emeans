@@ -1,0 +1,28 @@
+{
+  "docsSidebar": [
+    "index",
+    "getting-started",
+    {
+      "type": "category",
+      "label": "SQL functions",
+      "items": [
+        "functions/emeans",
+        "functions/assign",
+        "functions/stream",
+        "functions/spatial",
+        "functions/recipe-and-trace"
+      ]
+    },
+    {
+      "type": "category",
+      "label": "Reference",
+      "items": [
+        "reference/settings",
+        "reference/algorithm"
+      ]
+    },
+    "performance",
+    "demos",
+    "development"
+  ]
+}

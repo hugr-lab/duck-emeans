@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import {themes as prismThemes} from 'prism-react-renderer';
 import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
@@ -9,9 +11,17 @@ import type * as Preset from '@docusaurus/preset-classic';
 // static/playground.html redirects the playground's old address there.
 //
 // VERSIONING: at each release run `npm run docusaurus docs:version <X.Y.Z>` in
-// website/ and commit the snapshot. Docusaurus then serves the latest released
-// version at the root and the live docs/ tree as "Next" under /next/. Until the
-// first snapshot the live docs serve at the root.
+// website/ and commit the snapshot (versions.json, versioned_docs/,
+// versioned_sidebars/). Docusaurus serves the latest released version at the root
+// and the live docs/ tree as "Next" under /next/, with an unreleased banner. Only
+// the latest release is indexed: "Next" and older releases are near-copies of it,
+// so they get noindex (as on the mssql extension's site).
+
+const versionsFile = path.join(__dirname, 'versions.json');
+const released: string[] = fs.existsSync(versionsFile) ? JSON.parse(fs.readFileSync(versionsFile, 'utf8')) : [];
+const noIndexVersions = Object.fromEntries(
+  released.length ? ['current', ...released.slice(1)].map((v) => [v, {noIndex: true}]) : [],
+);
 
 const config: Config = {
   title: 'DuckDB emeans Extension',
@@ -42,6 +52,7 @@ const config: Config = {
           routeBasePath: '/',
           editUrl: 'https://github.com/hugr-lab/duck-emeans/tree/main/website/',
           showLastUpdateTime: true,
+          versions: noIndexVersions,
         },
         blog: false,
         theme: {
@@ -83,6 +94,10 @@ const config: Config = {
           href: 'https://hugr-lab.github.io/duck-emeans/demo/playground.html',
           label: 'Playground',
           position: 'left',
+        },
+        {
+          type: 'docsVersionDropdown',
+          position: 'right',
         },
         {
           href: 'https://hugr-lab.github.io/',
