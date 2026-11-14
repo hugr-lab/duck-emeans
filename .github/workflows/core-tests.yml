@@ -1,7 +1,7 @@
 #
 # Numerical core under ASan/UBSan and ThreadSanitizer, the CRAP gate over every C and C++ function, and
-# the comparison with the reference e-means in faiss-cpu and the interrupt test. The last two jobs build DuckDB from
-# the submodule. The SQL tests (test/sql, among them the memory_limit and max_execution_time tests) run in the
+# the comparison with the reference e-means in faiss-cpu and the interrupt test, the browser demos and the docs
+# site (website/). The CRAP and faiss-cpu jobs build DuckDB from the submodule. The SQL tests (test/sql, among them the memory_limit and max_execution_time tests) run in the
 # distribution pipeline and in the CRAP job.
 #
 name: Core tests
@@ -68,3 +68,21 @@ jobs:
           java-version: "21"
       - run: npm test
       - run: make -C web/playground test
+
+  docs:
+    name: docs site (Docusaurus build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      # onBrokenLinks and onBrokenAnchors are 'throw', so a broken link fails the build.
+      - name: npm ci && docusaurus build
+        working-directory: website
+        run: |
+          npm ci
+          npx docusaurus build

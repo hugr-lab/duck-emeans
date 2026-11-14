@@ -67,6 +67,10 @@ Use `rtk` as a command prefix in this environment (see the user's global instruc
   `hash(v, seed, pass)`, and feed the core's stepper (`emeans_stream_begin` etc. in `emeans.h`, which runs
   `emeans_fit`'s step on a B x d row buffer). A pass query must not have a LIMIT: a top-N does not spill.
 - `docs/PLAN.md`: the phased plan; `docs/ALGORITHM.md`: the formulas.
+- `website/`: the documentation site (Docusaurus, as the mssql extension's), published by `pages.yml` at the
+  root of https://hugr-lab.github.io/duck-emeans/ with the demos under `/demo/`. `cd website && npm ci &&
+  npx docusaurus build` checks it (broken links and anchors fail); core-tests.yml runs that on every PR.
+  `description.yml` is the community-extensions entry.
 - `web/playground/`: the playground, Scala.js + Laminar built with Mill (`make -C web/playground test`,
   `make -C web/playground dist`); it reaches DuckDB through `web/playground-bridge.js`.
 - `web/`: the browser demo. `demo-core.js` is pure and tested (`npm test`); `demo.js` is the page;
