@@ -11,11 +11,14 @@ binary loads only in the DuckDB release it was built for. The numerical core and
 C11 (the core has no DuckDB dependency); what needs the C++ API, such as the window function, spilling
 memory and the streaming functions, is in `src/cpp`.
 
-**[The playground](https://hugr-lab.github.io/duck-emeans/playground.html)**: Lloyd's k-means and e-means
+**[Documentation](https://hugr-lab.github.io/duck-emeans/)**: getting started, every SQL function, settings
+and limits, the algorithm and the benchmarks.
+
+**[The playground](https://hugr-lab.github.io/duck-emeans/demo/playground.html)**: Lloyd's k-means and e-means
 side by side on 2-D data, with their Voronoi cells and the train and held-out test MSE over epochs, both
 run by the extension compiled to WebAssembly inside DuckDB-WASM and then replayed. It follows the
 [playground](https://e-means.github.io/playground.html) of the e-means authors, with the computation in
-SQL. A [simpler demo](https://hugr-lab.github.io/duck-emeans/) clusters points in the plane and times
+SQL. A [simpler demo](https://hugr-lab.github.io/duck-emeans/demo/) clusters points in the plane and times
 embedding-sized vectors (d = 768 or 1536). Nothing is installed and no data leaves the page.
 
 ## Status
@@ -197,7 +200,8 @@ allowed and loads `emeans.duckdb_extension.wasm`, the `wasm_eh` build from the d
 - `playground.html` is the playground: a Scala.js + Laminar app in `web/playground/` (Mill), which reaches
   DuckDB through `playground-bridge.js`. `make -C web/playground test` runs its tests on Node.
 
-The Pages workflow builds both and publishes them after every successful build on `main`. To run them
+The Pages workflow builds both and publishes them under `/demo/`, with the documentation site
+(`website/`, Docusaurus) at the root, after every successful build on `main`. To run them
 locally (needs Java and Node):
 
 ```sh

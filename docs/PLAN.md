@@ -79,7 +79,10 @@ argument once in bind and caches the norms, so the hot path is a plain n × k ×
 10. Done: spatial clustering. `emeans_agg` (aggregate and window function over POINT geometries or vectors)
     and `emeans_assign_point`, after PostGIS's `ST_ClusterKMeans`; geographic CRSs on the sphere.
 11. Done: the move from the stable C API to DuckDB's C++ API, keeping the numerical core in C (below).
-12. Submission to `duckdb/community-extensions`.
+12. Submission to `duckdb/community-extensions` (in progress): a documentation site (`website/`, Docusaurus,
+    as the mssql extension has; published at the root of hugr-lab.github.io/duck-emeans/ with the demos
+    under /demo/), `description.yml` brought up to date, then the v0.1.0 release and the pull request to
+    community-extensions pinning that release's commit.
 13. Done (merged in #22): streaming e-means for data larger than memory, as separate functions (below).
 
 ## Moving to the C++ API
