@@ -95,3 +95,32 @@ def test_run_lizard_returns_the_csv_and_refuses_empty_output(monkeypatch):
     assert calls[0] == ["/opt/bin/lizard", "--csv", "-l", "cpp", "src"]
     with pytest.raises(SystemExit, match="no rows for src\nboom"):
         crap_cpp.run_lizard(["src"], "lizard")
+
+
+def test_lines_for_joins_a_relative_name_to_an_absolute_build_path():
+    coverage = {"/build/elsewhere/src/x.cpp": {5: 1}}
+    assert crap_cpp.lines_for(coverage, "src/x.cpp") == {5: 1}
+    # And the other way round: lizard given absolute paths, the report relative ones.
+    assert crap_cpp.lines_for({"src/x.cpp": {5: 1}}, "/home/me/proj/src/x.cpp") == {5: 1}
+
+
+def test_lines_for_refuses_a_shared_basename_alone():
+    # Review of #550: an LCOV report of the extension's binary also lists DuckDB and
+    # vcpkg sources. A file missing from the report (a platform-conditional unit) must
+    # show N/A, not another file's coverage.
+    coverage = {"/build/other/x.cpp": {5: 1}}
+    assert crap_cpp.lines_for(coverage, "src/x.cpp") is None
+    assert crap_cpp.coverage_for({"file": "src/x.cpp", "start": 1, "end": 9}, coverage) is None
+
+
+def test_lines_for_refuses_two_equally_good_candidates():
+    coverage = {"/build/a/src/x.cpp": {5: 1}, "/build/b/src/x.cpp": {5: 0}}
+    assert crap_cpp.lines_for(coverage, "src/x.cpp") is None
+    # One of them matching deeper is the answer again.
+    coverage["/build/b/other/src/x.cpp"] = {7: 1}
+    assert crap_cpp.lines_for(coverage, "other/src/x.cpp") == {7: 1}
+
+
+def test_lines_for_takes_an_exact_name_before_any_suffix():
+    coverage = {"src/x.cpp": {1: 1}, "/build/src/x.cpp": {2: 1}}
+    assert crap_cpp.lines_for(coverage, "src/x.cpp") == {1: 1}

@@ -36,6 +36,7 @@ the suite that runs, and `make test` alone leaves every TDS path at zero):
         build/coverage/<binary> > build/coverage/coverage.lcov
 """
 import argparse
+import csv
 import json
 import pathlib
 import re
@@ -74,7 +75,7 @@ def parse_lizard_csv(text):
     for number, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
             continue
-        fields = next(__import__("csv").reader([line]))
+        fields = next(csv.reader([line]))
         if len(fields) < len(CSV_COLUMNS):
             sys.exit(f"crap_cpp: lizard csv line {number} has {len(fields)} columns, "
                      f"expected {len(CSV_COLUMNS)} ({', '.join(CSV_COLUMNS)}). "
@@ -123,17 +124,23 @@ def merge_coverage(into, parsed):
 
 
 def lines_for(coverage, path):
-    """The DA lines of one source file, matched by the longest common suffix.
+    """The DA lines of one source file, matched where one name ends the other whole.
 
     An LCOV report names files as the compiler saw them -- absolute, or relative
-    to the build directory -- and lizard names them as it was asked to. Matching
-    on the longest shared suffix joins them without either side having to agree
-    on a root.
+    to the build directory -- and lizard names them as it was asked to, so the two
+    agree only on a suffix. Every component of the shorter name must match: a
+    report exported from the extension's binary also lists DuckDB and vcpkg
+    sources and headers, so accepting a shared basename alone would hand a
+    function another file's coverage whenever its own is absent from the report --
+    a platform-conditional unit (the SSPI or krb5 authenticator), a header with no
+    instantiated code. Two candidates that match equally well are no answer
+    either; both cases report None, so the function shows N/A instead of a figure
+    that is wrong without saying so.
     """
     if path in coverage:
         return coverage[path]
     wanted = pathlib.PurePath(path).parts
-    best, best_score = None, 0
+    best, best_score, matches = None, 0, 0
     for candidate, lines in coverage.items():
         parts = pathlib.PurePath(candidate).parts
         score = 0
@@ -141,9 +148,13 @@ def lines_for(coverage, path):
             if a != b:
                 break
             score += 1
+        if score < min(len(wanted), len(parts)):
+            continue
         if score > best_score:
-            best, best_score = lines, score
-    return best
+            best, best_score, matches = lines, score, 1
+        elif score == best_score and lines is not best:
+            matches += 1
+    return best if matches == 1 else None
 
 
 def coverage_for(function, coverage):
