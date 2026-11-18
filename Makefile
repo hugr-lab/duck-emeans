@@ -12,7 +12,7 @@ OVERRIDE_GIT_DESCRIBE ?= v2.0.0
 # (provides: release, debug, reldebug, test_release, test_debug, wasm_*, format, clean, ...)
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
-.PHONY: test_core test_threads test_interrupt crap compare_faiss bench compare_postgis compare_qdrant help
+.PHONY: test_core test_threads test_interrupt notebook crap compare_faiss bench compare_postgis compare_qdrant help
 
 EXTENSION_BINARY := build/release/extension/$(EXT_NAME)/$(EXT_NAME).duckdb_extension
 
@@ -53,6 +53,14 @@ compare_faiss: release
 test_interrupt: release
 	$(REFERENCE_PYTHON) test/python/interrupt.py $(EXTENSION_BINARY)
 
+# The marimo notebook (notebooks/emeans_explained.py), run against this build and exported to static HTML.
+# The export fails if a cell fails, e.g. the batch and step laws computed in Python disagreeing with
+# emeans_recipe. CI runs it; pages.yml publishes it at /notebook/.
+NOTEBOOK_HTML ?= build/notebook/index.html
+notebook: release
+	EMEANS_EXTENSION=$(PROJ_DIR)$(EXTENSION_BINARY) uvx marimo@0.25.2 export html --sandbox \
+		notebooks/emeans_explained.py -o $(NOTEBOOK_HTML)
+
 bench: release
 	$(REFERENCE_PYTHON) bench/run_bench.py $(EXTENSION_BINARY)
 
@@ -83,6 +91,7 @@ help:
 	@echo "make test_core        - C tests of src/core under ASan/UBSan (no DuckDB needed)"
 	@echo "make test_threads     - 8 threads on a shared parameter table under ThreadSanitizer"
 	@echo "make test_interrupt   - emeans_stream stops on con.interrupt() (Python via uv; CI)"
+	@echo "make notebook         - run the marimo notebook against the build, export build/notebook/index.html (CI)"
 	@echo "make crap             - CRAP score per C/C++ function (lizard + llvm-cov); fails at CRAP >= 10"
 	@echo "make compare_faiss    - recipe, objective and assignment against faiss-cpu's NumpyEmeans (manual)"
 	@echo "make bench            - emeans() against NumpyEmeans and Lloyd, timings (manual)"

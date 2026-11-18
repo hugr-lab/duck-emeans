@@ -71,6 +71,10 @@ Use `rtk` as a command prefix in this environment (see the user's global instruc
   root of https://hugr-lab.github.io/duck-emeans/ with the demos under `/demo/`. `cd website && npm ci &&
   npx docusaurus build` checks it (broken links and anchors fail); core-tests.yml runs that on every PR.
   `description.yml` is the community-extensions entry.
+- `notebooks/emeans_explained.py`: a marimo notebook that annotates the formulas and checks the batch and step
+  laws, computed in Python, against `emeans_recipe` (an assertion). `make notebook` runs it against the build and
+  exports `build/notebook/index.html`; CI runs that, and `pages.yml` publishes it at `/notebook/`. The docs page
+  `website/docs/explained.md` (KaTeX via remark-math/rehype-katex) carries the same formulas.
 - `web/playground/`: the playground, Scala.js + Laminar built with Mill (`make -C web/playground test`,
   `make -C web/playground dist`); it reaches DuckDB through `web/playground-bridge.js`.
 - `web/`: the browser demo. `demo-core.js` is pure and tested (`npm test`); `demo.js` is the page;

@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {themes as prismThemes} from 'prism-react-renderer';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
@@ -53,10 +55,13 @@ const config: Config = {
           editUrl: 'https://github.com/hugr-lab/duck-emeans/tree/main/website/',
           showLastUpdateTime: true,
           versions: noIndexVersions,
+          // $...$ and $$...$$ in the docs, typeset by KaTeX; its stylesheet is bundled below, not loaded from a CDN.
+          remarkPlugins: [remarkMath],
+          rehypePlugins: [rehypeKatex],
         },
         blog: false,
         theme: {
-          customCss: './src/css/custom.css',
+          customCss: ['./src/css/custom.css', './node_modules/katex/dist/katex.min.css'],
         },
       } satisfies Preset.Options,
     ],
