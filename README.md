@@ -12,7 +12,10 @@ C11 (the core has no DuckDB dependency); what needs the C++ API, such as the win
 memory and the streaming functions, is in `src/cpp`.
 
 **[Documentation](https://hugr-lab.github.io/duck-emeans/)**: getting started, every SQL function, settings
-and limits, the algorithm and the benchmarks.
+and limits, the algorithm and the benchmarks. **[e-means explained](https://hugr-lab.github.io/duck-emeans/explained/)**
+annotates every formula, with a [marimo](https://marimo.io) notebook that runs them against the extension
+([rendered](https://hugr-lab.github.io/duck-emeans/notebook/); `uvx marimo edit --sandbox
+notebooks/emeans_explained.py` to change the sliders).
 
 **[The playground](https://hugr-lab.github.io/duck-emeans/demo/playground.html)**: Lloyd's k-means and e-means
 side by side on 2-D data, with their Voronoi cells and the train and held-out test MSE over epochs, both

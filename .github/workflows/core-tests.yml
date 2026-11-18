@@ -52,6 +52,8 @@ jobs:
       - run: GEN=ninja make compare_faiss
       # emeans_stream stops on con.interrupt(), also while a spilled pass sorts (the release is built already).
       - run: GEN=ninja make test_interrupt
+      # The marimo notebook runs against this build; a failing cell (the formulas against emeans_recipe) fails.
+      - run: GEN=ninja make notebook
 
   web:
     name: browser demos (npm test, Scala.js tests)

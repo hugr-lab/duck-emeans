@@ -4,6 +4,8 @@
 #   /demo/                   the browser demos: index.html (plain JavaScript) and playground.html (Scala.js and
 #                            Laminar, built here with Mill), with the WASM build of the extension
 #   /playground.html         a redirect to /demo/playground.html, where the playground was before the docs
+#   /notebook/               the marimo notebook (notebooks/emeans_explained.py), run against the linux_amd64 build
+#                            from the same distribution run and exported to static HTML
 # Runs after every successful distribution pipeline on main, taking the wasm_eh build from that run, or by
 # hand (the latest such run).
 #
@@ -76,6 +78,13 @@ jobs:
           run-id: ${{ steps.run.outputs.id }}
           github-token: ${{ github.token }}
           path: wasm
+      - uses: actions/download-artifact@v4
+        with:
+          name: emeans-v2.0.0-extension-linux_amd64
+          run-id: ${{ steps.run.outputs.id }}
+          github-token: ${{ github.token }}
+          path: linux
+      - uses: astral-sh/setup-uv@v6
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -98,6 +107,10 @@ jobs:
           cp -r website/build/. _site/
           cp -r web/playground/dist/. _site/demo/
           ls -l _site _site/demo
+      - name: Run and export the notebook
+        env:
+          EMEANS_EXTENSION: ${{ github.workspace }}/linux/emeans.duckdb_extension
+        run: uvx marimo@0.25.2 export html --sandbox notebooks/emeans_explained.py -o _site/notebook/index.html
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site

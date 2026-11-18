@@ -14,3 +14,4 @@ node_modules/
 web/emeans.duckdb_extension.wasm
 .cache/
 website/.docusaurus/
+__marimo__/
