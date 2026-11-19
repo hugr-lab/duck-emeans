@@ -12,17 +12,18 @@ INSTALL emeans FROM community;
 LOAD emeans;
 ```
 
+The extension is one of [DuckDB's community extensions](https://duckdb.org/community_extensions/), built
+for DuckDB 2.0 on Linux (x86-64 and arm64), macOS (arm64), Windows (MSVC and MinGW) and DuckDB-WASM.
+
 :::note
 
-The extension is being submitted to DuckDB's community extensions. Until it is published there, build it
-from source ([Development](./development.md)) and load the file into a DuckDB 2.0.0 started with
+A binary loads only into the DuckDB release it was built for, so `INSTALL` needs DuckDB 2.0. To build it
+yourself, see [Development](./development.md), and load the file into a DuckDB 2.0.0 started with
 `-unsigned`:
 
 ```sql
 LOAD 'build/release/extension/emeans/emeans.duckdb_extension';
 ```
-
-A binary loads only into the DuckDB release it was built for.
 
 :::
 
