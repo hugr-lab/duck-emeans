@@ -29,8 +29,8 @@ embedding-sized vectors (d = 768 or 1536). Nothing is installed and no data leav
 Done (see [the plan](docs/PLAN.md)): the C core with a vectorised distance kernel, threads and Accelerate
 on macOS; the SQL functions below, with a cosine variant and spatial clustering of POINT geometries;
 `emeans_stream` for data larger than memory; validation against the reference implementation in
-faiss-cpu; comparisons with PostGIS and Qdrant; and two browser demos. Still to come: a GPU build and
-the community-extension submission.
+faiss-cpu; comparisons with PostGIS and Qdrant; two browser demos; and the release in DuckDB's community
+extensions. Still to come: a GPU build.
 
 | Function | Returns |
 |---|---|
@@ -56,6 +56,7 @@ vectors' own shape: `FLOAT[384][]` for a list of `FLOAT[384]` (or any fixed-size
 `FLOAT[][]`.
 
 ```sql
+INSTALL emeans FROM community;
 LOAD emeans;
 
 -- Cluster every document's chunks into 8 topics, then label each chunk with its topic
